@@ -13,6 +13,7 @@ export type StatusChangeHandler = (status: WsConnectionStatus) => void;
 export class EchoCastWsClient {
   private socket: WebSocket | null = null;
   private serverUrl: string = '';
+  private deviceId: string | null = null;
   private status: WsConnectionStatus = 'disconnected';
   private reconnectAttempts: number = 0;
   private maxReconnectDelayMs: number = 8000;
@@ -46,6 +47,10 @@ export class EchoCastWsClient {
 
   public getStatus(): WsConnectionStatus {
     return this.status;
+  }
+
+  public getDeviceId(): string | undefined {
+    return this.deviceId || undefined;
   }
 
   public onStatusChange(handler: StatusChangeHandler): () => void {
@@ -152,6 +157,10 @@ export class EchoCastWsClient {
   }
 
   private handleIncomingMessage(message: WsMessage) {
+    if (message.type === 'DEVICE_REGISTERED') {
+      this.deviceId = message.payload.id;
+    }
+
     if (message.type === 'SYNC_PONG') {
       const pong = message.payload;
       const receiveTime = timeSync.getLocalTime();

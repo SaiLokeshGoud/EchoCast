@@ -96,6 +96,48 @@ app.get('/api/server/status', (_req: Request, res: Response) => {
 });
 
 /**
+ * Room Verification Endpoint (used by receivers to validate room code & status)
+ */
+app.get('/api/room/verify', (req: Request, res: Response) => {
+  const roomId = req.query.roomId as string;
+  const broadcastState = audioStreamService.getBroadcastState();
+
+  if (!roomId || !roomId.trim()) {
+    res.status(400).json({ valid: false, error: 'Room code is required' });
+    return;
+  }
+
+  const isMatch = broadcastState.roomId.trim().toUpperCase() === roomId.trim().toUpperCase();
+  if (!isMatch) {
+    res.status(404).json({
+      valid: false,
+      error: `Room "${roomId}" was not found`,
+      code: 'INVALID_ROOM_ID',
+    });
+    return;
+  }
+
+  if (!broadcastState.isRoomActive) {
+    res.status(403).json({
+      valid: false,
+      error: `Room "${roomId}" is currently paused or closed by the host`,
+      code: 'ROOM_INACTIVE',
+      isRoomActive: false,
+    });
+    return;
+  }
+
+  res.json({
+    valid: true,
+    roomId: broadcastState.roomId,
+    isRoomActive: broadcastState.isRoomActive,
+    currentTrack: broadcastState.currentTrack,
+    senderConnected: deviceManager.getSender() !== undefined,
+    connectedReceiversCount: deviceManager.getReceivers().length,
+  });
+});
+
+/**
  * Audio Catalog Endpoint
  */
 app.get('/api/audio/tracks', (_req: Request, res: Response) => {

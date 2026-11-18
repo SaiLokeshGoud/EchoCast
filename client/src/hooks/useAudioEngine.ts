@@ -12,6 +12,8 @@ export function useAudioEngine() {
   const [positionSec, setPositionSec] = useState<number>(0);
   const [durationSec, setDurationSec] = useState<number>(0);
   const [isUnlocked, setIsUnlocked] = useState<boolean>(webAudioEngine.isUnlocked());
+  const [bufferProgress, setBufferProgress] = useState<number>(webAudioEngine.getBufferProgress());
+  const [cacheCount, setCacheCount] = useState<number>(webAudioEngine.getCacheCount());
 
   useEffect(() => {
     const unsubscribe = webAudioEngine.subscribe(() => {
@@ -23,6 +25,8 @@ export function useAudioEngine() {
       setManualOffsetMsState(webAudioEngine.getManualOffsetMs());
       setDurationSec(webAudioEngine.getDuration());
       setIsUnlocked(webAudioEngine.isUnlocked());
+      setBufferProgress(webAudioEngine.getBufferProgress());
+      setCacheCount(webAudioEngine.getCacheCount());
     });
 
     // Position update interval when playing
@@ -65,6 +69,8 @@ export function useAudioEngine() {
     manualOffsetMs,
     positionSec,
     durationSec,
+    bufferProgress,
+    cacheCount,
     isUnlocked,
     unlockAudio,
     setVolume,

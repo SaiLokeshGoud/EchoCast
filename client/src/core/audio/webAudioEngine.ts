@@ -15,6 +15,7 @@ export class WebAudioEngine {
   private activeBuffer: AudioBuffer | null = null;
 
   private state: AudioEngineState = 'locked';
+  private bufferProgress: number = 0;
   private volume: number = 1.0;
   private isMuted: boolean = false;
   private outputType: DeviceAudioOutput = 'speaker';
@@ -25,8 +26,14 @@ export class WebAudioEngine {
   private listeners: Set<AudioEngineListener> = new Set();
   private endedListeners: Set<() => void> = new Set();
 
+  // Mobile Audio Session Keep-Alive & Screen WakeLock
+  private keepAliveOsc: OscillatorNode | null = null;
+  private keepAliveGain: GainNode | null = null;
+  private wakeLock: any = null;
+
   constructor() {
     this.detectHardwareLatency();
+    this.setupVisibilityWakeLockListener();
   }
 
   public subscribe(listener: AudioEngineListener): () => void {
@@ -84,7 +91,7 @@ export class WebAudioEngine {
   }
 
   /**
-   * Unlock AudioContext on user interaction
+   * Unlock AudioContext on user interaction with DAC priming & keep-alive
    */
   public async unlock(): Promise<boolean> {
     const ctx = this.getAudioContext();
@@ -96,10 +103,117 @@ export class WebAudioEngine {
       }
     }
 
+    // Play an imperceptible micro-buffer to prime the mobile/desktop DAC hardware
+    try {
+      const silentBuffer = ctx.createBuffer(1, 1, 22050);
+      const primer = ctx.createBufferSource();
+      primer.buffer = silentBuffer;
+      primer.connect(ctx.destination);
+      primer.start();
+    } catch {
+      // Ignore if primer fails
+    }
+
     if (ctx.state === 'running') {
       this.state = this.activeBuffer ? 'ready' : 'unlocked';
+      this.startKeepAliveNode();
+      this.requestWakeLock();
       this.notify();
       return true;
+    }
+    return false;
+  }
+
+  /**
+   * Keep-Alive: Subtle sub-audible oscillator prevents mobile browsers from suspending idle audio thread
+   */
+  private startKeepAliveNode() {
+    if (this.keepAliveOsc || !this.ctx) return;
+    try {
+      this.keepAliveOsc = this.ctx.createOscillator();
+      this.keepAliveGain = this.ctx.createGain();
+      // -120dB inaudible amplitude to preserve power while keeping audio pipeline hot
+      this.keepAliveGain.gain.setValueAtTime(0.00001, this.ctx.currentTime);
+      this.keepAliveOsc.connect(this.keepAliveGain);
+      this.keepAliveGain.connect(this.ctx.destination);
+      this.keepAliveOsc.start();
+    } catch {
+      // Keep-alive oscillator unavailable or unsupported
+    }
+  }
+
+  /**
+   * Screen WakeLock: prevents phone screen from locking/throttling during audio playback
+   */
+  public async requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator && !this.wakeLock) {
+        this.wakeLock = await (navigator as any).wakeLock.request('screen');
+        this.wakeLock.addEventListener('release', () => {
+          this.wakeLock = null;
+        });
+      }
+    } catch {
+      // WakeLock not supported or denied
+    }
+  }
+
+  public releaseWakeLock() {
+    if (this.wakeLock) {
+      try {
+        this.wakeLock.release();
+      } catch {}
+      this.wakeLock = null;
+    }
+  }
+
+  private setupVisibilityWakeLockListener() {
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && this.state === 'playing') {
+          this.requestWakeLock();
+        }
+      });
+    }
+  }
+
+  /**
+   * Mobile Media Session API: binds lock-screen info and OS media center
+   */
+  public updateMediaSession(track: AudioTrackMetadata | null, isPlaying: boolean) {
+    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator && track) {
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: track.title,
+          artist: track.artist || 'EchoCast Stream',
+          album: 'EchoCast Multi-Device Sync',
+          artwork: [
+            {
+              src: track.albumArtUrl || '/favicon.ico',
+              sizes: '192x192',
+              type: 'image/png',
+            },
+          ],
+        });
+        navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+      } catch {
+        // MediaSession not supported
+      }
+    }
+  }
+
+  /**
+   * Output sink selection (Chrome 110+, Edge, Opera)
+   */
+  public async setAudioSinkId(sinkId: string): Promise<boolean> {
+    const ctx = this.getAudioContext();
+    if ('setSinkId' in ctx && typeof (ctx as any).setSinkId === 'function') {
+      try {
+        await (ctx as any).setSinkId(sinkId);
+        return true;
+      } catch (e) {
+        console.warn('Failed to setSinkId on AudioContext:', e);
+      }
     }
     return false;
   }
@@ -110,6 +224,14 @@ export class WebAudioEngine {
 
   public getState(): AudioEngineState {
     return this.state;
+  }
+
+  public getBufferProgress(): number {
+    return this.bufferProgress;
+  }
+
+  public getCacheCount(): number {
+    return this.audioBufferCache.size;
   }
 
   public getVolume(): number {
@@ -171,19 +293,21 @@ export class WebAudioEngine {
   }
 
   /**
-   * Pre-fetch and decode track audio buffer via HTTP
+   * Pre-fetch, buffer with streaming progress, and decode audio track
    */
   public async loadTrack(track: AudioTrackMetadata): Promise<AudioBuffer | null> {
     this.currentTrack = track;
 
     if (this.audioBufferCache.has(track.id)) {
       this.activeBuffer = this.audioBufferCache.get(track.id)!;
+      this.bufferProgress = 100;
       this.state = this.isUnlocked() ? 'ready' : 'locked';
       this.notify();
       return this.activeBuffer;
     }
 
     this.state = 'buffering';
+    this.bufferProgress = 5;
     this.notify();
 
     try {
@@ -192,7 +316,40 @@ export class WebAudioEngine {
         throw new Error(`HTTP error ${response.status} fetching audio stream`);
       }
 
-      const arrayBuffer = await response.arrayBuffer();
+      const contentLength = response.headers.get('content-length');
+      const totalBytes = contentLength ? parseInt(contentLength, 10) : track.sizeBytes || 0;
+
+      let arrayBuffer: ArrayBuffer;
+
+      if (response.body && totalBytes > 0 && typeof ReadableStream !== 'undefined') {
+        const reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let receivedBytes = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            receivedBytes += value.length;
+            this.bufferProgress = Math.min(95, Math.round((receivedBytes / totalBytes) * 95));
+            this.notify();
+          }
+        }
+
+        const merged = new Uint8Array(receivedBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          merged.set(chunk, offset);
+          offset += chunk.length;
+        }
+        arrayBuffer = merged.buffer;
+      } else {
+        arrayBuffer = await response.arrayBuffer();
+        this.bufferProgress = 90;
+        this.notify();
+      }
+
       const ctx = this.getAudioContext();
       const decodedBuffer = await ctx.decodeAudioData(arrayBuffer);
 
@@ -208,24 +365,60 @@ export class WebAudioEngine {
 
       this.audioBufferCache.set(track.id, decodedBuffer);
       this.activeBuffer = decodedBuffer;
+      this.bufferProgress = 100;
       this.state = this.isUnlocked() ? 'ready' : 'locked';
       this.notify();
       return decodedBuffer;
     } catch (err) {
       console.error(`Failed to load and decode track ${track.title}`, err);
       this.state = 'error';
+      this.bufferProgress = 0;
       this.notify();
       return null;
     }
   }
 
   /**
-   * Synchronized Playback: schedules AudioBufferSourceNode at exact target Web Audio clock
+   * Synchronized Playback: schedules AudioBufferSourceNode at exact target Web Audio clock.
+   * Avoids unnecessary playback restarts when already in sync.
    */
   public async schedulePlay(scheduledServerTime: number, startPositionSec: number = 0, generation: number = 0) {
     if (generation < this.currentGeneration) {
       return; // Ignore stale command
     }
+
+    const currentServerTime = timeSync.getServerTime();
+
+    // Avoid unnecessary playback restarts:
+    // If we are already playing the same track and generation matches, check drift
+    if (
+      this.state === 'playing' &&
+      this.currentSourceNode &&
+      this.currentTrack &&
+      generation === this.currentGeneration
+    ) {
+      const currentPos = this.getCurrentPosition();
+      let expectedPos = startPositionSec;
+      if (scheduledServerTime > 0) {
+        const elapsedSec = (currentServerTime - scheduledServerTime) / 1000;
+        expectedPos = startPositionSec + Math.max(0, elapsedSec);
+      }
+      const driftSec = Math.abs(currentPos - expectedPos);
+
+      // If drift is less than 45ms, receiver is already synchronized in phase!
+      if (driftSec < 0.045) {
+        return;
+      }
+
+      // If drift is small (45ms to 120ms), gently adjust playback rate without audible restart
+      if (driftSec < 0.120 && this.ctx) {
+        const rate = currentPos < expectedPos ? 1.015 : 0.985;
+        this.currentSourceNode.playbackRate.setValueAtTime(rate, this.ctx.currentTime);
+        this.currentSourceNode.playbackRate.setValueAtTime(1.0, this.ctx.currentTime + 0.35);
+        return;
+      }
+    }
+
     this.currentGeneration = generation;
 
     const ctx = this.getAudioContext();
@@ -245,7 +438,6 @@ export class WebAudioEngine {
     this.stopActiveSource();
 
     // Calculate time remaining until scheduled server time
-    const currentServerTime = timeSync.getServerTime();
     const timeDeltaMs = scheduledServerTime - currentServerTime;
 
     // Apply latency compensation (NTP roundtrip/2 + hardware latency + bluetooth/manual offset)
@@ -266,6 +458,7 @@ export class WebAudioEngine {
       if (this.currentSourceNode === source) {
         this.currentSourceNode = null;
         this.state = 'ready';
+        this.updateMediaSession(this.currentTrack, false);
         this.notify();
         for (const cb of this.endedListeners) {
           try {
@@ -282,6 +475,9 @@ export class WebAudioEngine {
     this.playbackStartTimeSec = targetAudioContextTime;
     this.trackOffsetSec = safeOffset;
     this.state = 'playing';
+
+    this.requestWakeLock();
+    this.updateMediaSession(this.currentTrack, true);
     this.notify();
   }
 
@@ -293,6 +489,7 @@ export class WebAudioEngine {
     this.currentGeneration = generation;
     this.stopActiveSource();
     this.state = 'paused';
+    this.updateMediaSession(this.currentTrack, false);
     this.notify();
   }
 
@@ -309,6 +506,8 @@ export class WebAudioEngine {
     this.stopActiveSource();
     this.trackOffsetSec = 0;
     this.state = 'ready';
+    this.releaseWakeLock();
+    this.updateMediaSession(this.currentTrack, false);
     this.notify();
   }
 

@@ -102,6 +102,42 @@ export class EchoCastWsServer {
     switch (message.type) {
       case 'DEVICE_REGISTER': {
         const payload = message.payload;
+        const currentBroadcastState = audioStreamService.getBroadcastState();
+
+        // Validate room for receivers
+        if (payload.role === 'receiver') {
+          const expectedRoomId = currentBroadcastState.roomId.trim().toUpperCase();
+          const providedRoomId = (payload.roomId || '').trim().toUpperCase();
+
+          if (providedRoomId !== expectedRoomId) {
+            wsLogger.warn(`Receiver attempted registration with invalid roomId "${payload.roomId}" (expected: "${currentBroadcastState.roomId}")`);
+            this.send(ws, {
+              type: 'ERROR',
+              payload: {
+                code: 'INVALID_ROOM_ID',
+                message: `Room "${payload.roomId || ''}" does not exist. Please check the room code.`,
+                details: { activeRoomId: currentBroadcastState.roomId, providedRoomId: payload.roomId },
+              },
+              timestamp: serverTimestamp,
+            });
+            break;
+          }
+
+          if (!currentBroadcastState.isRoomActive) {
+            wsLogger.warn(`Receiver attempted to join closed room "${payload.roomId}"`);
+            this.send(ws, {
+              type: 'ERROR',
+              payload: {
+                code: 'ROOM_INACTIVE',
+                message: `Room "${payload.roomId}" is currently paused or closed by the host.`,
+                details: { roomId: currentBroadcastState.roomId, isRoomActive: false },
+              },
+              timestamp: serverTimestamp,
+            });
+            break;
+          }
+        }
+
         // Use existing deviceId or generate consistent client id
         const deviceId = ws.deviceId || crypto.randomUUID();
         ws.deviceId = deviceId;
@@ -119,7 +155,7 @@ export class EchoCastWsServer {
         // Send current broadcast state to new device
         this.send(ws, {
           type: 'BROADCAST_STATE',
-          payload: audioStreamService.getBroadcastState(),
+          payload: currentBroadcastState,
           timestamp: serverTimestamp,
         });
 
@@ -129,6 +165,26 @@ export class EchoCastWsServer {
           payload: deviceManager.getAllDevices(),
           timestamp: serverTimestamp,
         });
+        break;
+      }
+
+      case 'RECEIVER_LEAVE_ROOM': {
+        if (ws.deviceId) {
+          const removed = deviceManager.removeDevice(ws.deviceId);
+          if (removed) {
+            this.broadcast({
+              type: 'DEVICE_DISCONNECTED',
+              payload: { deviceId: ws.deviceId },
+              timestamp: serverTimestamp,
+            });
+            this.broadcast({
+              type: 'DEVICE_LIST',
+              payload: deviceManager.getAllDevices(),
+              timestamp: serverTimestamp,
+            });
+          }
+          ws.deviceId = undefined;
+        }
         break;
       }
 

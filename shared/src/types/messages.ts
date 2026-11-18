@@ -16,6 +16,7 @@ export type WsMessageType =
   | 'DEVICE_LIST'
   | 'DEVICE_STATE_UPDATE'
   | 'DEVICE_DISCONNECTED'
+  | 'RECEIVER_LEAVE_ROOM'
 
   // Time Synchronization (NTP protocol)
   | 'SYNC_PING'
@@ -60,6 +61,7 @@ export type WsMessage =
   | { type: 'DEVICE_LIST'; payload: DeviceInfo[]; timestamp: number; senderId?: string }
   | { type: 'DEVICE_STATE_UPDATE'; payload: DeviceStateUpdatePayload; timestamp: number; senderId?: string }
   | { type: 'DEVICE_DISCONNECTED'; payload: { deviceId: string }; timestamp: number; senderId?: string }
+  | { type: 'RECEIVER_LEAVE_ROOM'; payload: { deviceId?: string }; timestamp: number; senderId?: string }
   | { type: 'SYNC_PING'; payload: SyncPingPayload; timestamp: number; senderId?: string }
   | { type: 'SYNC_PONG'; payload: SyncPongPayload; timestamp: number; senderId?: string }
   | { type: 'SYNC_FORCE_CALIBRATE'; payload: Record<string, never>; timestamp: number; senderId?: string }

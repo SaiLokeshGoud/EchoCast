@@ -51,13 +51,21 @@ export function App() {
 
   const initialScreen: AppScreen = useMemo(() => {
     const roleParam = searchParams.get('role');
+    const roomParam = searchParams.get('room') || searchParams.get('join') || searchParams.get('code');
+    if (roomParam) return 'receiver';
     if (roleParam === 'sender') return 'sender';
     if (roleParam === 'receiver') return 'receiver';
     return 'welcome';
   }, [searchParams]);
 
   const initialRoomId = useMemo(() => {
-    return searchParams.get('room') || localStorage.getItem('echocast_room_id') || 'CAST-842';
+    return (
+      searchParams.get('room') ||
+      searchParams.get('join') ||
+      searchParams.get('code') ||
+      localStorage.getItem('echocast_room_id') ||
+      'CAST-842'
+    );
   }, [searchParams]);
 
   const [activeScreen, setActiveScreen] = useState<AppScreen>(initialScreen);
@@ -65,6 +73,7 @@ export function App() {
   const [roomId, setRoomId] = useState<string>(initialRoomId);
   const [isRoomActive, setIsRoomActive] = useState<boolean>(true);
   const [connectionStatus, setConnectionStatus] = useState<WsConnectionStatus>('disconnected');
+  const [roomValidationError, setRoomValidationError] = useState<string | null>(null);
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
   const [tracks, setTracks] = useState<AudioTrackMetadata[]>([]);
   const [playlist, setPlaylist] = useState<AudioTrackMetadata[]>([]);
@@ -91,6 +100,8 @@ export function App() {
     manualOffsetMs,
     positionSec,
     durationSec,
+    bufferProgress,
+    cacheCount,
     isUnlocked,
     unlockAudio,
     setVolume,
@@ -228,6 +239,13 @@ export function App() {
       setActiveScreen('welcome');
     });
 
+    // Server error handler (room authorization / validation)
+    const unbindError = wsClient.on<{ code: string; message: string }>('ERROR', (payload) => {
+      if (payload.code === 'INVALID_ROOM_ID' || payload.code === 'ROOM_INACTIVE') {
+        setRoomValidationError(payload.message);
+      }
+    });
+
     return () => {
       unbindStatus();
       unbindBroadcastState();
@@ -240,6 +258,7 @@ export function App() {
       unbindRemoteVol();
       unbindRemoteMute();
       unbindDisconnect();
+      unbindError();
     };
   }, [deviceName, role, platform, outputType, roomId, fetchTracks, webAudioEngine, setVolume, setMuted]);
 
@@ -291,6 +310,7 @@ export function App() {
 
   // Room ID update handler
   const handleUpdateRoomId = (newRoomId: string) => {
+    setRoomValidationError(null);
     setRoomId(newRoomId);
     localStorage.setItem('echocast_room_id', newRoomId);
     wsClient.register({
@@ -301,11 +321,23 @@ export function App() {
       userAgent: navigator.userAgent,
       roomId: newRoomId,
     });
+    if (role === 'sender') {
+      wsClient.send({
+        type: 'BROADCAST_ROOM_UPDATE',
+        payload: { isRoomActive, roomId: newRoomId },
+        timestamp: Date.now(),
+      });
+    }
+  };
+
+  const handleDisconnectRoom = () => {
     wsClient.send({
-      type: 'BROADCAST_ROOM_UPDATE',
-      payload: { isRoomActive, roomId: newRoomId },
+      type: 'RECEIVER_LEAVE_ROOM',
+      payload: { deviceId: wsClient.getDeviceId() },
       timestamp: Date.now(),
     });
+    webAudioEngine.stop();
+    setActiveScreen('welcome');
   };
 
   const handleToggleRoomActive = (active: boolean) => {
@@ -526,11 +558,21 @@ export function App() {
           <ReceiverDashboard
             currentRoomId={roomId}
             isRoomActive={isRoomActive}
+            connectionStatus={connectionStatus}
+            roomValidationError={roomValidationError}
+            senderInfo={{
+              primaryUrl: serverStatus?.primaryUrl || window.location.origin,
+              senderConnected: sender !== undefined || serverStatus?.senderConnected || false,
+              connectedReceiversCount: receivers.length,
+            }}
             onConnectRoom={handleUpdateRoomId}
+            onDisconnectRoom={handleDisconnectRoom}
             onOpenQrModal={() => setIsQrModalOpen(true)}
             currentTrack={currentTrack}
             isPlaying={isPlaying}
             engineState={engineState}
+            bufferProgress={bufferProgress}
+            cacheCount={cacheCount}
             positionSec={positionSec}
             durationSec={durationSec}
             volume={volume}
@@ -549,6 +591,7 @@ export function App() {
             }}
             onForceSync={forceSync}
             onPlayLocalTestPulse={handleLocalTestPulse}
+            onSetAudioSinkId={(sinkId) => webAudioEngine.setAudioSinkId(sinkId)}
           />
         )}
 
