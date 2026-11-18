@@ -248,6 +248,67 @@ export class EchoCastWsServer {
         break;
       }
 
+      case 'BROADCAST_PLAYLIST_UPDATE': {
+        const { playlist } = message.payload;
+        if (Array.isArray(playlist)) {
+          audioStreamService.setPlaylistOrder(playlist.map((t) => t.id));
+          this.broadcast({
+            type: 'BROADCAST_STATE',
+            payload: audioStreamService.getBroadcastState(),
+            timestamp: serverTimestamp,
+          });
+        }
+        break;
+      }
+
+      case 'BROADCAST_AUTOPLAY_UPDATE': {
+        audioStreamService.setAutoplay(message.payload.autoplay);
+        this.broadcast({
+          type: 'BROADCAST_STATE',
+          payload: audioStreamService.getBroadcastState(),
+          timestamp: serverTimestamp,
+        });
+        break;
+      }
+
+      case 'BROADCAST_ROOM_UPDATE': {
+        const { isRoomActive, roomId } = message.payload;
+        audioStreamService.setRoomState(isRoomActive, roomId);
+        this.broadcast({
+          type: 'BROADCAST_ROOM_UPDATE',
+          payload: { isRoomActive, roomId },
+          timestamp: serverTimestamp,
+        });
+        this.broadcast({
+          type: 'BROADCAST_STATE',
+          payload: audioStreamService.getBroadcastState(),
+          timestamp: serverTimestamp,
+        });
+        break;
+      }
+
+      case 'TRACK_DELETE': {
+        const { trackId } = message.payload;
+        audioStreamService.removeTrack(trackId);
+        this.broadcast({
+          type: 'BROADCAST_STATE',
+          payload: audioStreamService.getBroadcastState(),
+          timestamp: serverTimestamp,
+        });
+        break;
+      }
+
+      case 'TRACK_UPDATE_METADATA': {
+        const { trackId, durationSec, artist, album } = message.payload;
+        audioStreamService.updateTrackMetadata(trackId, durationSec, artist, album);
+        this.broadcast({
+          type: 'BROADCAST_STATE',
+          payload: audioStreamService.getBroadcastState(),
+          timestamp: serverTimestamp,
+        });
+        break;
+      }
+
       case 'TEST_PULSE_PLAY': {
         // Scheduled synchronization test blip (1kHz 60ms click) across all receivers
         const scheduledTime = syncEngine.calculateScheduledTime(400);

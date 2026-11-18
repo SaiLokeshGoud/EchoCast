@@ -63,10 +63,14 @@ export function App() {
   const [activeScreen, setActiveScreen] = useState<AppScreen>(initialScreen);
   const [role, setRole] = useState<DeviceRole>(initialScreen === 'sender' ? 'sender' : 'receiver');
   const [roomId, setRoomId] = useState<string>(initialRoomId);
+  const [isRoomActive, setIsRoomActive] = useState<boolean>(true);
   const [connectionStatus, setConnectionStatus] = useState<WsConnectionStatus>('disconnected');
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
   const [tracks, setTracks] = useState<AudioTrackMetadata[]>([]);
+  const [playlist, setPlaylist] = useState<AudioTrackMetadata[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [autoplay, setAutoplay] = useState(true);
+  const [loop, setLoop] = useState(false);
 
   // Settings State
   const [bufferDelayMs, setBufferDelayMs] = useState<number>(650);
@@ -146,6 +150,21 @@ export function App() {
     // Listen to initial broadcast state
     const unbindBroadcastState = wsClient.on<BroadcastState>('BROADCAST_STATE', (state) => {
       setIsPlaying(state.isPlaying);
+      if (state.playlist && Array.isArray(state.playlist)) {
+        setPlaylist(state.playlist);
+      }
+      if (state.autoplay !== undefined) {
+        setAutoplay(state.autoplay);
+      }
+      if (state.loop !== undefined) {
+        setLoop(state.loop);
+      }
+      if (state.isRoomActive !== undefined) {
+        setIsRoomActive(state.isRoomActive);
+      }
+      if (state.roomId) {
+        setRoomId(state.roomId);
+      }
       if (state.currentTrack) {
         webAudioEngine.loadTrack(state.currentTrack);
       }
@@ -282,6 +301,20 @@ export function App() {
       userAgent: navigator.userAgent,
       roomId: newRoomId,
     });
+    wsClient.send({
+      type: 'BROADCAST_ROOM_UPDATE',
+      payload: { isRoomActive, roomId: newRoomId },
+      timestamp: Date.now(),
+    });
+  };
+
+  const handleToggleRoomActive = (active: boolean) => {
+    setIsRoomActive(active);
+    wsClient.send({
+      type: 'BROADCAST_ROOM_UPDATE',
+      payload: { isRoomActive: active, roomId },
+      timestamp: Date.now(),
+    });
   };
 
   // Device name update handler
@@ -345,8 +378,8 @@ export function App() {
     });
   };
 
-  const handleSelectTrack = (trackId: string) => {
-    const track = tracks.find((t) => t.id === trackId);
+  const handleSelectTrack = useCallback((trackId: string) => {
+    const track = tracks.find((t) => t.id === trackId) || playlist.find((t) => t.id === trackId);
     if (track) {
       wsClient.send({
         type: 'BROADCAST_TRACK_UPDATE',
@@ -354,21 +387,71 @@ export function App() {
         timestamp: Date.now(),
       });
     }
-  };
+  }, [tracks, playlist]);
 
   // Previous and Next track handlers
-  const handlePreviousTrack = () => {
-    if (tracks.length === 0) return;
-    const currentIndex = tracks.findIndex((t) => t.id === currentTrack?.id);
-    const prevIndex = currentIndex > 0 ? currentIndex - 1 : tracks.length - 1;
-    handleSelectTrack(tracks[prevIndex].id);
+  const activePlaylist = useMemo(() => {
+    return playlist.length > 0 ? playlist : tracks;
+  }, [playlist, tracks]);
+
+  const handlePreviousTrack = useCallback(() => {
+    if (activePlaylist.length === 0) return;
+    const currentIndex = activePlaylist.findIndex((t) => t.id === currentTrack?.id);
+    const prevIndex = currentIndex > 0 ? currentIndex - 1 : activePlaylist.length - 1;
+    handleSelectTrack(activePlaylist[prevIndex].id);
+    handlePlay(0);
+  }, [activePlaylist, currentTrack, handleSelectTrack]);
+
+  const handleNextTrack = useCallback(() => {
+    if (activePlaylist.length === 0) return;
+    const currentIndex = activePlaylist.findIndex((t) => t.id === currentTrack?.id);
+    const nextIndex = currentIndex < activePlaylist.length - 1 ? currentIndex + 1 : 0;
+    handleSelectTrack(activePlaylist[nextIndex].id);
+    handlePlay(0);
+  }, [activePlaylist, currentTrack, handleSelectTrack]);
+
+  // Autoplay handler when current track finishes naturally
+  useEffect(() => {
+    const unbindEnded = webAudioEngine.onEnded(() => {
+      if (role === 'sender' && autoplay) {
+        handleNextTrack();
+      }
+    });
+    return unbindEnded;
+  }, [role, autoplay, handleNextTrack, webAudioEngine]);
+
+  // Playlist management handlers
+  const handleDeleteTrack = async (trackId: string) => {
+    try {
+      const res = await fetch(`/api/audio/tracks/${trackId}`, { method: 'DELETE' });
+      if (res.ok) {
+        fetchTracks();
+      }
+    } catch (e) {
+      console.error('Failed to delete track:', e);
+    }
   };
 
-  const handleNextTrack = () => {
-    if (tracks.length === 0) return;
-    const currentIndex = tracks.findIndex((t) => t.id === currentTrack?.id);
-    const nextIndex = currentIndex < tracks.length - 1 ? currentIndex + 1 : 0;
-    handleSelectTrack(tracks[nextIndex].id);
+  const handleReorderPlaylist = (newPlaylist: AudioTrackMetadata[]) => {
+    setPlaylist(newPlaylist);
+    wsClient.send({
+      type: 'BROADCAST_PLAYLIST_UPDATE',
+      payload: { playlist: newPlaylist },
+      timestamp: Date.now(),
+    });
+  };
+
+  const handleToggleAutoplay = (enabled: boolean) => {
+    setAutoplay(enabled);
+    wsClient.send({
+      type: 'BROADCAST_AUTOPLAY_UPDATE',
+      payload: { autoplay: enabled },
+      timestamp: Date.now(),
+    });
+  };
+
+  const handleToggleLoop = (enabled: boolean) => {
+    setLoop(enabled);
   };
 
   const handleLocalTestPulse = () => {
@@ -405,10 +488,17 @@ export function App() {
           <SenderDashboard
             roomId={roomId}
             onUpdateRoomId={handleUpdateRoomId}
+            isRoomActive={isRoomActive}
+            onToggleRoomActive={handleToggleRoomActive}
             onOpenQrModal={() => setIsQrModalOpen(true)}
             currentTrack={currentTrack}
             tracks={tracks}
+            playlist={playlist}
             isPlaying={isPlaying}
+            autoplay={autoplay}
+            onToggleAutoplay={handleToggleAutoplay}
+            loop={loop}
+            onToggleLoop={handleToggleLoop}
             positionSec={positionSec}
             durationSec={durationSec}
             volume={volume}
@@ -424,8 +514,8 @@ export function App() {
             onMuteToggle={() => setMuted(!isMuted)}
             onSelectTrack={handleSelectTrack}
             onRefreshTracks={fetchTracks}
-            onRemoteVolume={setRemoteReceiverVolume}
-            onRemoteMute={muteRemoteReceiver}
+            onDeleteTrack={handleDeleteTrack}
+            onReorderPlaylist={handleReorderPlaylist}
             onNavigateToDevices={() => handleNavigate('devices')}
             primaryUrl={serverStatus?.primaryUrl || window.location.origin}
             isHotspotDetected={serverStatus?.isHotspotDetected || false}
@@ -435,6 +525,7 @@ export function App() {
         {activeScreen === 'receiver' && (
           <ReceiverDashboard
             currentRoomId={roomId}
+            isRoomActive={isRoomActive}
             onConnectRoom={handleUpdateRoomId}
             onOpenQrModal={() => setIsQrModalOpen(true)}
             currentTrack={currentTrack}

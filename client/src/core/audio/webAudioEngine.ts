@@ -23,6 +23,7 @@ export class WebAudioEngine {
   private playbackStartTimeSec: number = 0; // audioContext time when playback began
   private trackOffsetSec: number = 0;       // track position when started
   private listeners: Set<AudioEngineListener> = new Set();
+  private endedListeners: Set<() => void> = new Set();
 
   constructor() {
     this.detectHardwareLatency();
@@ -31,6 +32,11 @@ export class WebAudioEngine {
   public subscribe(listener: AudioEngineListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  public onEnded(listener: () => void): () => void {
+    this.endedListeners.add(listener);
+    return () => this.endedListeners.delete(listener);
   }
 
   private notify() {
@@ -190,6 +196,16 @@ export class WebAudioEngine {
       const ctx = this.getAudioContext();
       const decodedBuffer = await ctx.decodeAudioData(arrayBuffer);
 
+      // Record accurate decoded duration
+      track.durationSec = decodedBuffer.duration;
+      if (track.sourceType === 'file') {
+        fetch(`/api/audio/tracks/${track.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ durationSec: decodedBuffer.duration }),
+        }).catch(() => {});
+      }
+
       this.audioBufferCache.set(track.id, decodedBuffer);
       this.activeBuffer = decodedBuffer;
       this.state = this.isUnlocked() ? 'ready' : 'locked';
@@ -251,6 +267,13 @@ export class WebAudioEngine {
         this.currentSourceNode = null;
         this.state = 'ready';
         this.notify();
+        for (const cb of this.endedListeners) {
+          try {
+            cb();
+          } catch (e) {
+            console.error('Error in onEnded callback', e);
+          }
+        }
       }
     };
 

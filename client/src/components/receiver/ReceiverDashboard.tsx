@@ -26,6 +26,7 @@ import { AudioEngineState } from '../../core/audio/webAudioEngine';
 
 interface Props {
   currentRoomId: string;
+  isRoomActive?: boolean;
   onConnectRoom: (roomId: string) => void;
   onOpenQrModal: () => void;
   currentTrack: AudioTrackMetadata | null;
@@ -50,6 +51,7 @@ interface Props {
 
 export const ReceiverDashboard: React.FC<Props> = ({
   currentRoomId,
+  isRoomActive = true,
   onConnectRoom,
   onOpenQrModal,
   currentTrack,
@@ -100,6 +102,14 @@ export const ReceiverDashboard: React.FC<Props> = ({
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto pb-8">
+      {/* Room Inactive Alert */}
+      {!isRoomActive && (
+        <div className="p-4 rounded-2xl bg-charcoal-900 border border-amber-500/30 text-amber-300 flex items-center gap-3 text-xs shadow-md">
+          <AlertCircle className="w-5 h-5 shrink-0 text-amber-400" />
+          <span>The host has paused or closed this room. Playback is on standby until the sender resumes.</span>
+        </div>
+      )}
+
       {/* Room Connection Bar */}
       <div className="bg-charcoal-900 border border-charcoal-750 rounded-2xl p-5 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <form onSubmit={handleConnect} className="flex items-center gap-2 flex-1 max-w-md">

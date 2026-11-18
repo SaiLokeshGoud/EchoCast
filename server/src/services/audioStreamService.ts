@@ -4,7 +4,6 @@ import { Request, Response } from 'express';
 import {
   AudioTrackMetadata,
   BroadcastState,
-  PlaybackState,
   PlayCommandPayload,
   PauseCommandPayload,
   SeekCommandPayload,
@@ -17,6 +16,7 @@ const audioLogger = logger.forContext('AudioStreamService');
 
 export class AudioStreamService {
   private tracks: Map<string, AudioTrackMetadata> = new Map();
+  private playlistTrackIds: string[] = [];
   private broadcastState: BroadcastState;
   private testWavBuffer: Buffer | null = null;
 
@@ -28,7 +28,11 @@ export class AudioStreamService {
       positionSec: 0,
       referenceServerTime: syncEngine.getServerTime(),
       volume: 1.0,
-      loop: true,
+      loop: false,
+      autoplay: true,
+      playlist: [],
+      isRoomActive: true,
+      roomId: 'CAST-842',
       generation: 1,
     };
 
@@ -61,9 +65,8 @@ export class AudioStreamService {
         // On every beat: sharp click (50ms duration)
         if (timeInBeat < 0.05) {
           const isBar = beatIndex % 4 === 0;
-          // High pitch (1500Hz) on bar beat, mid pitch (800Hz) on normal beats
           const freq = isBar ? 1500 : 800;
-          const envelope = Math.exp(-timeInBeat * 60); // Exponential decay
+          const envelope = Math.exp(-timeInBeat * 60);
           sampleVal = Math.sin(2 * Math.PI * freq * timeInBeat) * envelope * 0.85;
         }
 
@@ -73,7 +76,6 @@ export class AudioStreamService {
           sampleVal += Math.sin(2 * Math.PI * 65 * timeInBeat) * bassEnvelope * 0.7;
         }
 
-        // Clamp to 16-bit PCM range
         const clamped = Math.max(-1, Math.min(1, sampleVal));
         pcmData[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
       }
@@ -86,13 +88,13 @@ export class AudioStreamService {
       headerBuffer.writeUInt32LE(36 + dataSize, 4);
       headerBuffer.write('WAVE', 8);
       headerBuffer.write('fmt ', 12);
-      headerBuffer.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
-      headerBuffer.writeUInt16LE(1, 20);  // AudioFormat (1 = PCM)
-      headerBuffer.writeUInt16LE(1, 22);  // NumChannels (1 = Mono)
-      headerBuffer.writeUInt32LE(sampleRate, 24); // SampleRate
-      headerBuffer.writeUInt32LE(sampleRate * 2, 28); // ByteRate (SampleRate * NumChannels * BitsPerSample/8)
-      headerBuffer.writeUInt16LE(2, 32);  // BlockAlign (NumChannels * BitsPerSample/8)
-      headerBuffer.writeUInt16LE(16, 34); // BitsPerSample
+      headerBuffer.writeUInt32LE(16, 16);
+      headerBuffer.writeUInt16LE(1, 20);
+      headerBuffer.writeUInt16LE(1, 22);
+      headerBuffer.writeUInt32LE(sampleRate, 24);
+      headerBuffer.writeUInt32LE(sampleRate * 2, 28);
+      headerBuffer.writeUInt16LE(2, 32);
+      headerBuffer.writeUInt16LE(16, 34);
       headerBuffer.write('data', 36);
       headerBuffer.writeUInt32LE(dataSize, 40);
 
@@ -114,7 +116,11 @@ export class AudioStreamService {
       };
 
       this.tracks.set(testTrack.id, testTrack);
+      if (!this.playlistTrackIds.includes(testTrack.id)) {
+        this.playlistTrackIds.push(testTrack.id);
+      }
       this.broadcastState.currentTrack = testTrack;
+      this.syncPlaylistToState();
       audioLogger.info(`Built-in sync metronome WAV generated successfully (${(this.testWavBuffer.length / 1024).toFixed(1)} KB).`);
     } catch (err) {
       audioLogger.error('Failed to generate built-in WAV buffer', err);
@@ -132,32 +138,50 @@ export class AudioStreamService {
       for (const file of files) {
         const filePath = path.join(config.uploadDir, file);
         const stat = fs.statSync(filePath);
-        if (stat.isFile()) {
+        if (stat.isFile() && !file.startsWith('.')) {
           const ext = path.extname(file).toLowerCase().replace('.', '');
           const trackId = `track-${Buffer.from(file).toString('base64url')}`;
 
           const track: AudioTrackMetadata = {
             id: trackId,
             title: path.basename(file, path.extname(file)),
+            artist: 'Local Upload',
             url: `/api/audio/stream/${trackId}`,
             sourceType: 'file',
-            format: (['mp3', 'wav', 'ogg', 'aac', 'flac'].includes(ext) ? ext : 'mp3') as any,
+            format: (['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a'].includes(ext) ? ext : 'mp3') as any,
             sizeBytes: stat.size,
-            durationSec: 180, // Fallback estimation until client decodes header
+            durationSec: 180,
             addedAt: stat.birthtimeMs || Date.now(),
           };
 
           this.tracks.set(trackId, track);
+          if (!this.playlistTrackIds.includes(trackId)) {
+            this.playlistTrackIds.push(trackId);
+          }
         }
       }
+      this.syncPlaylistToState();
       audioLogger.info(`Scanned uploads directory: ${this.tracks.size} tracks available.`);
     } catch (err) {
       audioLogger.error('Error scanning uploads directory', err);
     }
   }
 
+  private syncPlaylistToState() {
+    const list: AudioTrackMetadata[] = [];
+    for (const id of this.playlistTrackIds) {
+      const t = this.tracks.get(id);
+      if (t) list.push(t);
+    }
+    this.broadcastState.playlist = list;
+  }
+
   public getAllTracks(): AudioTrackMetadata[] {
     return Array.from(this.tracks.values());
+  }
+
+  public getPlaylist(): AudioTrackMetadata[] {
+    return this.broadcastState.playlist;
   }
 
   public getTrack(trackId: string): AudioTrackMetadata | undefined {
@@ -166,20 +190,124 @@ export class AudioStreamService {
 
   public addUploadedTrack(metadata: AudioTrackMetadata) {
     this.tracks.set(metadata.id, metadata);
+    if (!this.playlistTrackIds.includes(metadata.id)) {
+      this.playlistTrackIds.push(metadata.id);
+    }
+    this.syncPlaylistToState();
     audioLogger.info(`New track added: ${metadata.title} (${metadata.id})`);
   }
 
+  public removeTrack(trackId: string): boolean {
+    // If it's an uploaded file on disk, delete it
+    if (trackId !== 'test-metronome-sync') {
+      try {
+        const files = fs.readdirSync(config.uploadDir);
+        const targetFile = files.find((f) => `track-${Buffer.from(f).toString('base64url')}` === trackId);
+        if (targetFile) {
+          fs.unlinkSync(path.join(config.uploadDir, targetFile));
+          audioLogger.info(`Deleted file from disk: ${targetFile}`);
+        }
+      } catch (err) {
+        audioLogger.warn(`Could not delete file for track ${trackId}:`, err);
+      }
+    }
+
+    this.tracks.delete(trackId);
+    this.playlistTrackIds = this.playlistTrackIds.filter((id) => id !== trackId);
+    this.syncPlaylistToState();
+
+    // If active track was removed, pick next track
+    if (this.broadcastState.currentTrack?.id === trackId) {
+      const nextTrack = this.broadcastState.playlist[0] || null;
+      this.broadcastState.currentTrack = nextTrack;
+      this.broadcastState.positionSec = 0;
+      this.broadcastState.isPlaying = false;
+      this.broadcastState.playbackState = 'idle';
+      this.broadcastState.generation += 1;
+    }
+
+    return true;
+  }
+
+  public setPlaylistOrder(trackIds: string[]) {
+    this.playlistTrackIds = trackIds.filter((id) => this.tracks.has(id));
+    this.syncPlaylistToState();
+    audioLogger.info(`Updated playlist order (${this.playlistTrackIds.length} tracks)`);
+  }
+
+  public updateTrackMetadata(trackId: string, durationSec: number, artist?: string, album?: string) {
+    const track = this.tracks.get(trackId);
+    if (track) {
+      if (durationSec > 0) track.durationSec = durationSec;
+      if (artist) track.artist = artist;
+      if (album) track.album = album;
+      this.tracks.set(trackId, track);
+
+      if (this.broadcastState.currentTrack?.id === trackId) {
+        this.broadcastState.currentTrack = { ...track };
+      }
+      this.syncPlaylistToState();
+    }
+  }
+
+  public setAutoplay(autoplay: boolean) {
+    this.broadcastState.autoplay = autoplay;
+  }
+
+  public setLoop(loop: boolean) {
+    this.broadcastState.loop = loop;
+  }
+
+  public setRoomState(isRoomActive: boolean, roomId?: string) {
+    this.broadcastState.isRoomActive = isRoomActive;
+    if (roomId) this.broadcastState.roomId = roomId;
+    if (!isRoomActive) {
+      this.stop();
+    }
+    audioLogger.info(`Room state updated: active=${isRoomActive}, roomId=${this.broadcastState.roomId}`);
+  }
+
+  public nextTrack(): AudioTrackMetadata | null {
+    if (this.broadcastState.playlist.length === 0) return null;
+    const currentIndex = this.broadcastState.playlist.findIndex((t) => t.id === this.broadcastState.currentTrack?.id);
+    const nextIndex = currentIndex < this.broadcastState.playlist.length - 1 ? currentIndex + 1 : 0;
+    const next = this.broadcastState.playlist[nextIndex];
+    if (next) {
+      this.setTrack(next.id);
+      return next;
+    }
+    return null;
+  }
+
+  public previousTrack(): AudioTrackMetadata | null {
+    if (this.broadcastState.playlist.length === 0) return null;
+    const currentIndex = this.broadcastState.playlist.findIndex((t) => t.id === this.broadcastState.currentTrack?.id);
+    const prevIndex = currentIndex > 0 ? currentIndex - 1 : this.broadcastState.playlist.length - 1;
+    const prev = this.broadcastState.playlist[prevIndex];
+    if (prev) {
+      this.setTrack(prev.id);
+      return prev;
+    }
+    return null;
+  }
+
   public getBroadcastState(): BroadcastState {
-    // If playing, update position calculation based on elapsed server monotonic time
     if (this.broadcastState.isPlaying && this.broadcastState.currentTrack) {
       const serverNow = syncEngine.getServerTime();
       const elapsedSec = (serverNow - this.broadcastState.referenceServerTime) / 1000;
       let calculatedPos = this.broadcastState.positionSec + elapsedSec;
 
       if (this.broadcastState.currentTrack.durationSec > 0) {
-        if (calculatedPos > this.broadcastState.currentTrack.durationSec) {
+        if (calculatedPos >= this.broadcastState.currentTrack.durationSec) {
           if (this.broadcastState.loop) {
             calculatedPos = calculatedPos % this.broadcastState.currentTrack.durationSec;
+          } else if (this.broadcastState.autoplay && this.broadcastState.playlist.length > 1) {
+            // Autoplay next track
+            const next = this.nextTrack();
+            if (next) {
+              this.play(0);
+              return this.getBroadcastState();
+            }
           } else {
             calculatedPos = this.broadcastState.currentTrack.durationSec;
             this.broadcastState.isPlaying = false;
@@ -298,6 +426,31 @@ export class AudioStreamService {
         return;
       }
 
+      const totalSize = this.testWavBuffer.length;
+      const range = req.headers.range;
+
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+
+        if (start >= totalSize) {
+          res.status(416).send(`Requested range not satisfiable: ${start} >= ${totalSize}`);
+          return;
+        }
+
+        const chunk = this.testWavBuffer.subarray(start, end + 1);
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunk.length,
+          'Content-Type': 'audio/wav',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end(chunk);
+        return;
+      }
+
       res.writeHead(200, {
         'Content-Type': 'audio/wav',
         'Content-Length': this.testWavBuffer.length,
@@ -309,14 +462,12 @@ export class AudioStreamService {
       return;
     }
 
-    // Look up file in uploads
     const track = this.tracks.get(trackId);
     if (!track) {
       res.status(404).json({ error: 'Track not found' });
       return;
     }
 
-    // Resolve file path
     const files = fs.readdirSync(config.uploadDir);
     const targetFile = files.find((f) => `track-${Buffer.from(f).toString('base64url')}` === trackId);
 
@@ -337,11 +488,12 @@ export class AudioStreamService {
       aac: 'audio/aac',
       flac: 'audio/flac',
       weba: 'audio/webm',
+      m4a: 'audio/mp4',
+      opus: 'audio/opus',
     };
     const contentType = mimeTypes[track.format] || 'audio/mpeg';
 
     if (range) {
-      // Parse Range header e.g. "bytes=0-1024"
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;

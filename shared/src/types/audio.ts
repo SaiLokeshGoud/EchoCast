@@ -4,7 +4,7 @@
 
 export type AudioSourceType = 'file' | 'stream' | 'tone' | 'mic';
 
-export type AudioFormat = 'mp3' | 'wav' | 'ogg' | 'aac' | 'flac' | 'weba' | 'pcm';
+export type AudioFormat = 'mp3' | 'wav' | 'ogg' | 'aac' | 'flac' | 'weba' | 'pcm' | 'm4a' | 'opus';
 
 export interface AudioTrackMetadata {
   id: string;
@@ -20,6 +20,7 @@ export interface AudioTrackMetadata {
   channels?: number;
   addedAt: number;
   albumArtUrl?: string;
+  bitrateKbps?: number;
 }
 
 export type PlaybackState = 'idle' | 'buffering' | 'ready' | 'playing' | 'paused' | 'stopped';
@@ -33,6 +34,10 @@ export interface BroadcastState {
   scheduledStartTime?: number;   // Server timestamp when next play/seek takes effect
   volume: number;                // Master volume 0.0 to 1.0
   loop: boolean;
+  autoplay: boolean;
+  playlist: AudioTrackMetadata[];
+  isRoomActive: boolean;
+  roomId: string;
   generation: number;            // Monotonically increasing sequence to ignore stale actions
 }
 

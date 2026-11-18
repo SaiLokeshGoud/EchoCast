@@ -117,40 +117,97 @@ app.get('/api/audio/stream/:trackId', (req: Request, res: Response) => {
 });
 
 /**
- * Upload Audio Track Endpoint
+ * Upload Audio Track(s) Endpoint - supports single or batch file uploads
  */
-app.post('/api/audio/upload', upload.single('audio'), (req: Request, res: Response) => {
-  if (!req.file) {
+app.post('/api/audio/upload', upload.array('audio', 20), (req: Request, res: Response) => {
+  const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
+  if (!files || files.length === 0) {
     res.status(400).json({ error: 'No audio file provided' });
     return;
   }
 
-  const file = req.file;
-  const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
-  const trackId = `track-${Buffer.from(file.filename).toString('base64url')}`;
+  const newTracks: AudioTrackMetadata[] = [];
 
-  const metadata: AudioTrackMetadata = {
-    id: trackId,
-    title: path.basename(file.originalname, path.extname(file.originalname)),
-    url: `/api/audio/stream/${trackId}`,
-    sourceType: 'file',
-    format: (['mp3', 'wav', 'ogg', 'aac', 'flac'].includes(ext) ? ext : 'mp3') as any,
-    sizeBytes: file.size,
-    durationSec: 180, // Updated on client after header inspection
-    addedAt: Date.now(),
-  };
+  for (const file of files) {
+    const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
+    const trackId = `track-${Buffer.from(file.filename).toString('base64url')}`;
 
-  audioStreamService.addUploadedTrack(metadata);
-  logger.info(`Uploaded file saved: ${file.originalname} -> ${metadata.id}`);
+    const metadata: AudioTrackMetadata = {
+      id: trackId,
+      title: path.basename(file.originalname, path.extname(file.originalname)),
+      artist: 'Local Upload',
+      url: `/api/audio/stream/${trackId}`,
+      sourceType: 'file',
+      format: (['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'opus'].includes(ext) ? ext : 'mp3') as any,
+      sizeBytes: file.size,
+      durationSec: 180, // Updated accurately on client after decoding
+      addedAt: Date.now(),
+    };
 
-  // Broadcast track list update to clients
+    audioStreamService.addUploadedTrack(metadata);
+    logger.info(`Uploaded file saved: ${file.originalname} -> ${metadata.id}`);
+    newTracks.push(metadata);
+  }
+
+  // Broadcast updated state to all clients
   wsServer.broadcast({
-    type: 'BROADCAST_TRACK_UPDATE',
-    payload: metadata,
+    type: 'BROADCAST_STATE',
+    payload: audioStreamService.getBroadcastState(),
     timestamp: syncEngine.getServerTime(),
   });
 
-  res.status(201).json(metadata);
+  res.status(201).json(newTracks.length === 1 ? newTracks[0] : newTracks);
+});
+
+/**
+ * Delete Audio Track Endpoint
+ */
+app.delete('/api/audio/tracks/:trackId', (req: Request, res: Response) => {
+  const { trackId } = req.params;
+  const success = audioStreamService.removeTrack(trackId);
+  if (success) {
+    wsServer.broadcast({
+      type: 'BROADCAST_STATE',
+      payload: audioStreamService.getBroadcastState(),
+      timestamp: syncEngine.getServerTime(),
+    });
+    res.json({ success: true, trackId });
+  } else {
+    res.status(404).json({ error: 'Track not found' });
+  }
+});
+
+/**
+ * Reorder Playlist Endpoint
+ */
+app.put('/api/audio/playlist', (req: Request, res: Response) => {
+  const { trackIds } = req.body;
+  if (!Array.isArray(trackIds)) {
+    res.status(400).json({ error: 'trackIds array required' });
+    return;
+  }
+  audioStreamService.setPlaylistOrder(trackIds);
+  wsServer.broadcast({
+    type: 'BROADCAST_STATE',
+    payload: audioStreamService.getBroadcastState(),
+    timestamp: syncEngine.getServerTime(),
+  });
+  res.json({ success: true, playlist: audioStreamService.getPlaylist() });
+});
+
+/**
+ * Update Track Metadata Endpoint (e.g. accurately decoded duration from client)
+ */
+app.patch('/api/audio/tracks/:trackId', (req: Request, res: Response) => {
+  const { trackId } = req.params;
+  const { durationSec, artist, album } = req.body;
+  audioStreamService.updateTrackMetadata(trackId, durationSec, artist, album);
+  wsServer.broadcast({
+    type: 'BROADCAST_STATE',
+    payload: audioStreamService.getBroadcastState(),
+    timestamp: syncEngine.getServerTime(),
+  });
+  res.json({ success: true, track: audioStreamService.getTrack(trackId) });
 });
 
 /**
