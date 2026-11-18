@@ -37,6 +37,7 @@ export type WsMessageType =
   // Remote Sender controls on specific receiver
   | 'REMOTE_SET_RECEIVER_VOLUME'
   | 'REMOTE_MUTE_RECEIVER'
+  | 'REMOTE_DISCONNECT_RECEIVER'
   | 'ERROR';
 
 export interface BaseWsMessage<T = unknown> {
@@ -65,4 +66,5 @@ export type WsMessage =
   | { type: 'TEST_PULSE_PLAY'; payload: { scheduledServerTime: number; frequencyHz: number; durationMs: number }; timestamp: number; senderId?: string }
   | { type: 'REMOTE_SET_RECEIVER_VOLUME'; payload: { targetDeviceId: string; volume: number }; timestamp: number; senderId?: string }
   | { type: 'REMOTE_MUTE_RECEIVER'; payload: { targetDeviceId: string; isMuted: boolean }; timestamp: number; senderId?: string }
+  | { type: 'REMOTE_DISCONNECT_RECEIVER'; payload: { targetDeviceId: string; reason?: string }; timestamp: number; senderId?: string }
   | { type: 'ERROR'; payload: { code: string; message: string; details?: unknown }; timestamp: number; senderId?: string };

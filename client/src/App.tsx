@@ -8,11 +8,14 @@ import {
   PauseCommandPayload,
   SeekCommandPayload,
 } from '@echocast/shared';
-import { Header } from './components/common/Header';
+import { Header, AppScreen } from './components/common/Header';
 import { QrCodeModal } from './components/common/QrCodeModal';
 import { AudioUnlockModal } from './components/common/AudioUnlockModal';
+import { WelcomeScreen } from './components/welcome/WelcomeScreen';
 import { SenderDashboard } from './components/sender/SenderDashboard';
 import { ReceiverDashboard } from './components/receiver/ReceiverDashboard';
+import { DeviceManagementScreen } from './components/devices/DeviceManagementScreen';
+import { SettingsScreen } from './components/settings/SettingsScreen';
 import { wsClient, WsConnectionStatus } from './core/network/wsClient';
 import { useClockSync } from './hooks/useClockSync';
 import { useAudioEngine } from './hooks/useAudioEngine';
@@ -29,35 +32,50 @@ function detectPlatform(): DevicePlatform {
   return 'other';
 }
 
-function generateDefaultDeviceName(platform: DevicePlatform, _role: DeviceRole): string {
+function generateInitialDeviceName(platform: DevicePlatform): string {
   const platformNames: Record<DevicePlatform, string> = {
     android: 'Android Device',
-    ios: 'Apple Device',
-    windows: 'Windows PC',
+    ios: 'Apple iPhone',
+    windows: 'Windows Laptop',
     macos: 'Mac Computer',
-    linux: 'Linux Device',
-    other: 'Receiver Node',
+    linux: 'Linux Endpoint',
+    other: 'EchoCast Node',
   };
-  const base = platformNames[platform] || 'Device';
+  const base = platformNames[platform] || 'EchoCast Device';
   const randomSuffix = Math.floor(100 + Math.random() * 900);
   return `${base}-${randomSuffix}`;
 }
 
 export function App() {
-  // Query param allows starting directly in sender mode, e.g. ?role=sender
-  const initialRole: DeviceRole = useMemo(() => {
-    const params = new URLSearchParams(window.location.search);
-    return (params.get('role') as DeviceRole) || 'sender';
-  }, []);
+  const searchParams = useMemo(() => new URLSearchParams(window.location.search), []);
 
-  const [role, setRole] = useState<DeviceRole>(initialRole);
+  const initialScreen: AppScreen = useMemo(() => {
+    const roleParam = searchParams.get('role');
+    if (roleParam === 'sender') return 'sender';
+    if (roleParam === 'receiver') return 'receiver';
+    return 'welcome';
+  }, [searchParams]);
+
+  const initialRoomId = useMemo(() => {
+    return searchParams.get('room') || localStorage.getItem('echocast_room_id') || 'CAST-842';
+  }, [searchParams]);
+
+  const [activeScreen, setActiveScreen] = useState<AppScreen>(initialScreen);
+  const [role, setRole] = useState<DeviceRole>(initialScreen === 'sender' ? 'sender' : 'receiver');
+  const [roomId, setRoomId] = useState<string>(initialRoomId);
   const [connectionStatus, setConnectionStatus] = useState<WsConnectionStatus>('disconnected');
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
   const [tracks, setTracks] = useState<AudioTrackMetadata[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
 
+  // Settings State
+  const [bufferDelayMs, setBufferDelayMs] = useState<number>(650);
+  const [audioSampleRate, setAudioSampleRate] = useState<number>(44100);
+
   const platform = useMemo(() => detectPlatform(), []);
-  const deviceName = useMemo(() => generateDefaultDeviceName(platform, role), [platform, role]);
+  const [deviceName, setDeviceName] = useState<string>(() => {
+    return localStorage.getItem('echocast_device_name') || generateInitialDeviceName(platform);
+  });
 
   const { metrics: syncMetrics, forceSync, setManualAdjustment } = useClockSync();
   const {
@@ -78,7 +96,15 @@ export function App() {
     webAudioEngine,
   } = useAudioEngine();
 
-  const { receivers, setRemoteReceiverVolume, muteRemoteReceiver } = useDeviceRoster();
+  const {
+    devices,
+    receivers,
+    sender,
+    setRemoteReceiverVolume,
+    muteRemoteReceiver,
+    disconnectRemoteReceiver,
+  } = useDeviceRoster();
+
   const { status: serverStatus } = useServerStatus();
 
   // Fetch audio tracks from server
@@ -110,6 +136,7 @@ export function App() {
           platform,
           outputType,
           userAgent: navigator.userAgent,
+          roomId,
         });
       }
     });
@@ -175,6 +202,13 @@ export function App() {
       setMuted(payload.isMuted);
     });
 
+    // Remote disconnect notification
+    const unbindDisconnect = wsClient.on<{ reason?: string }>('REMOTE_DISCONNECT_RECEIVER', (payload) => {
+      alert(`You have been disconnected from the stream: ${payload.reason || 'By Host'}`);
+      wsClient.disconnect();
+      setActiveScreen('welcome');
+    });
+
     return () => {
       unbindStatus();
       unbindBroadcastState();
@@ -186,8 +220,9 @@ export function App() {
       unbindPulse();
       unbindRemoteVol();
       unbindRemoteMute();
+      unbindDisconnect();
     };
-  }, [deviceName, role, platform, outputType, fetchTracks, webAudioEngine, setVolume, setMuted]);
+  }, [deviceName, role, platform, outputType, roomId, fetchTracks, webAudioEngine, setVolume, setMuted]);
 
   // Periodic heartbeat reporting local metrics to server
   useEffect(() => {
@@ -202,21 +237,64 @@ export function App() {
         isMuted,
         outputType,
         audioBufferReady: engineState === 'ready' || engineState === 'playing',
+        roomId,
       });
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [connectionStatus, syncMetrics, manualOffsetMs, volume, isMuted, outputType, engineState]);
+  }, [connectionStatus, syncMetrics, manualOffsetMs, volume, isMuted, outputType, engineState, roomId]);
 
-  // Role change handler
-  const handleRoleChange = (newRole: DeviceRole) => {
-    setRole(newRole);
+  // Screen navigation handler
+  const handleNavigate = (screen: AppScreen) => {
+    setActiveScreen(screen);
+    if (screen === 'sender' && role !== 'sender') {
+      setRole('sender');
+      wsClient.register({
+        name: deviceName,
+        role: 'sender',
+        platform,
+        outputType,
+        userAgent: navigator.userAgent,
+        roomId,
+      });
+    } else if (screen === 'receiver' && role !== 'receiver') {
+      setRole('receiver');
+      wsClient.register({
+        name: deviceName,
+        role: 'receiver',
+        platform,
+        outputType,
+        userAgent: navigator.userAgent,
+        roomId,
+      });
+    }
+  };
+
+  // Room ID update handler
+  const handleUpdateRoomId = (newRoomId: string) => {
+    setRoomId(newRoomId);
+    localStorage.setItem('echocast_room_id', newRoomId);
     wsClient.register({
       name: deviceName,
-      role: newRole,
+      role,
       platform,
       outputType,
       userAgent: navigator.userAgent,
+      roomId: newRoomId,
+    });
+  };
+
+  // Device name update handler
+  const handleUpdateDeviceName = (newName: string) => {
+    setDeviceName(newName);
+    localStorage.setItem('echocast_device_name', newName);
+    wsClient.register({
+      name: newName,
+      role,
+      platform,
+      outputType,
+      userAgent: navigator.userAgent,
+      roomId,
     });
   };
 
@@ -278,27 +356,56 @@ export function App() {
     }
   };
 
+  // Previous and Next track handlers
+  const handlePreviousTrack = () => {
+    if (tracks.length === 0) return;
+    const currentIndex = tracks.findIndex((t) => t.id === currentTrack?.id);
+    const prevIndex = currentIndex > 0 ? currentIndex - 1 : tracks.length - 1;
+    handleSelectTrack(tracks[prevIndex].id);
+  };
+
+  const handleNextTrack = () => {
+    if (tracks.length === 0) return;
+    const currentIndex = tracks.findIndex((t) => t.id === currentTrack?.id);
+    const nextIndex = currentIndex < tracks.length - 1 ? currentIndex + 1 : 0;
+    handleSelectTrack(tracks[nextIndex].id);
+  };
+
   const handleLocalTestPulse = () => {
     webAudioEngine.playTestPulse(0, 1000, 60);
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 selection:bg-brand-500 selection:text-white">
-      {/* Persistent Navigation Bar */}
+    <div className="min-h-screen flex flex-col bg-charcoal-950 text-slate-100 selection:bg-brand-500 selection:text-charcoal-950">
+      {/* Top Persistent Header */}
       <Header
-        role={role}
-        onRoleChange={handleRoleChange}
+        activeScreen={activeScreen}
+        onNavigate={handleNavigate}
         connectionStatus={connectionStatus}
         primaryUrl={serverStatus?.primaryUrl || window.location.origin}
+        roomId={roomId}
+        receiverCount={receivers.length}
         onOpenQrModal={() => setIsQrModalOpen(true)}
         isAudioUnlocked={isUnlocked}
         onUnlockAudio={unlockAudio}
       />
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {role === 'sender' ? (
+      {/* Main Dynamic Viewport */}
+      <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {activeScreen === 'welcome' && (
+          <WelcomeScreen
+            onStartStreaming={() => handleNavigate('sender')}
+            onJoinStream={() => handleNavigate('receiver')}
+            serverStatus={serverStatus}
+            connectedReceiversCount={receivers.length}
+          />
+        )}
+
+        {activeScreen === 'sender' && (
           <SenderDashboard
+            roomId={roomId}
+            onUpdateRoomId={handleUpdateRoomId}
+            onOpenQrModal={() => setIsQrModalOpen(true)}
             currentTrack={currentTrack}
             tracks={tracks}
             isPlaying={isPlaying}
@@ -311,15 +418,25 @@ export function App() {
             onPause={handlePause}
             onSeek={handleSeek}
             onStop={handleStop}
+            onPreviousTrack={handlePreviousTrack}
+            onNextTrack={handleNextTrack}
             onVolumeChange={setVolume}
             onMuteToggle={() => setMuted(!isMuted)}
             onSelectTrack={handleSelectTrack}
             onRefreshTracks={fetchTracks}
             onRemoteVolume={setRemoteReceiverVolume}
             onRemoteMute={muteRemoteReceiver}
+            onNavigateToDevices={() => handleNavigate('devices')}
+            primaryUrl={serverStatus?.primaryUrl || window.location.origin}
+            isHotspotDetected={serverStatus?.isHotspotDetected || false}
           />
-        ) : (
+        )}
+
+        {activeScreen === 'receiver' && (
           <ReceiverDashboard
+            currentRoomId={roomId}
+            onConnectRoom={handleUpdateRoomId}
+            onOpenQrModal={() => setIsQrModalOpen(true)}
             currentTrack={currentTrack}
             isPlaying={isPlaying}
             engineState={engineState}
@@ -343,24 +460,50 @@ export function App() {
             onPlayLocalTestPulse={handleLocalTestPulse}
           />
         )}
+
+        {activeScreen === 'devices' && (
+          <DeviceManagementScreen
+            devices={devices}
+            sender={sender}
+            onRemoteVolume={setRemoteReceiverVolume}
+            onRemoteMute={muteRemoteReceiver}
+            onDisconnectDevice={disconnectRemoteReceiver}
+          />
+        )}
+
+        {activeScreen === 'settings' && (
+          <SettingsScreen
+            currentDeviceName={deviceName}
+            onUpdateDeviceName={handleUpdateDeviceName}
+            syncMetrics={syncMetrics}
+            onForceSync={forceSync}
+            serverStatus={serverStatus}
+            bufferDelayMs={bufferDelayMs}
+            onUpdateBufferDelay={setBufferDelayMs}
+            audioSampleRate={audioSampleRate}
+            onUpdateSampleRate={setAudioSampleRate}
+          />
+        )}
       </main>
 
-      {/* QR Code Modal */}
+      {/* Dynamic QR Code Modal */}
       <QrCodeModal
         isOpen={isQrModalOpen}
         onClose={() => setIsQrModalOpen(false)}
         interfaces={serverStatus?.activeInterfaces || []}
         primaryUrl={serverStatus?.primaryUrl || window.location.origin}
+        roomId={roomId}
       />
 
-      {/* Floating Audio Unlock Banner on mobile */}
+      {/* Floating Audio Hardware Unlock Banner */}
       <AudioUnlockModal isUnlocked={isUnlocked} onUnlock={unlockAudio} />
 
-      {/* Footer */}
-      <footer className="border-t border-slate-900 bg-slate-950 py-4 text-center text-xs text-slate-500 font-mono">
-        EchoCast • Zero-Cloud Local Synchronized Audio Streaming • Wi-Fi / Hotspot Engine
+      {/* Sleek Minimal Footer */}
+      <footer className="border-t border-charcoal-800 bg-charcoal-950 py-4 text-center text-xs text-slate-500 font-mono">
+        EchoCast • Zero-Cloud Synchronized Audio Architecture • Inspired by Spotify & Sonos
       </footer>
     </div>
   );
 }
+
 export default App;

@@ -51,11 +51,11 @@ export const AudioVisualizer: React.FC<Props> = ({ isActive = true, barCount = 3
         const x = i * (barWidth + gap);
         const y = h - barHeight;
 
-        // Gradient for bars (cyan to vibrant indigo/purple)
+        // Subtle green to cyan gradient (Spotify / Sonos aesthetic)
         const gradient = ctx.createLinearGradient(0, h, 0, 0);
-        gradient.addColorStop(0, '#4f46e5');
-        gradient.addColorStop(0.7, '#6366f1');
-        gradient.addColorStop(1, '#38bdf8');
+        gradient.addColorStop(0, '#047857');
+        gradient.addColorStop(0.7, '#10b981');
+        gradient.addColorStop(1, '#06b6d4');
 
         ctx.fillStyle = gradient;
         ctx.beginPath();
@@ -74,7 +74,7 @@ export const AudioVisualizer: React.FC<Props> = ({ isActive = true, barCount = 3
   }, [isActive, barCount]);
 
   return (
-    <div className="w-full flex items-center justify-center bg-slate-950/60 rounded-xl p-2 border border-slate-800/80 shadow-inner">
+    <div className="w-full flex items-center justify-center bg-charcoal-950 rounded-xl p-2 border border-charcoal-750 shadow-inner">
       <canvas
         ref={canvasRef}
         width={380}

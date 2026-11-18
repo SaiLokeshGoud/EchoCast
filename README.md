@@ -65,19 +65,45 @@ EchoCast is a zero-cloud, multi-device synchronized audio broadcasting platform 
         └───────────────────────────────────────────────────────────────┘
 ```
 
-### Module Responsibilities
+### Main Screens & User Interface
 
-1. **Sender Interface (`client/src/components/sender`)**:
-   - Master transport controls (Play, Pause, Seek, Stop, Loop, Volume).
-   - Audio file drag-and-drop uploader (MP3, WAV, FLAC, OGG, AAC) + built-in sync beat selector.
-   - Live roster of all connected receivers with RTT latency, clock offset, output mode, and remote volume control.
-   - Synchronized test pulse broadcaster.
+1. **Welcome Screen (`/`)**:
+   - EchoCast logo, branding, and offline readiness indicator.
+   - Quick one-click entry to **Start Streaming (Sender)** or **Join a Stream (Receiver)**.
+   - Network connectivity badge showing discovered local IP interfaces and hotspot detection.
+   - Core technology highlights (Sub-10ms PTP Sync, Bluetooth Codec Delay Compensation, Zero Cloud Privacy).
 
-2. **Receiver Interface (`client/src/components/receiver`)**:
-   - Synchronized playback engine with live audio visualizer.
-   - Audio routing toggle (Built-in Speaker vs Bluetooth Speaker).
-   - Real-time latency calibration slider and local sound check.
-   - One-tap Web Audio unlock overlay for iOS Safari & Android Chrome.
+2. **Sender Dashboard**:
+   - Dynamic **Room ID** generation and editing (e.g. `CAST-842`) with 1-click copy.
+   - Integrated **Room QR Code modal** for camera scan pairing.
+   - Vinyl record **Album Artwork Area** with spinning disc and waveform feedback during playback.
+   - Comprehensive **Transport Controls**: Previous Track, Play/Pause, Next Track, Stop, Scrub Bar with elapsed/remaining timers.
+   - Audio file drag-and-drop uploader (MP3, WAV, FLAC, OGG, AAC) + built-in calibration metronome beat.
+   - Connected receiver count badge and quick device status preview.
+   - Broadcast 1kHz alignment pulse trigger.
+
+3. **Receiver Dashboard**:
+   - Room code entry input and instant **Connect** button.
+   - Real-time connection and buffer state indicator (Connected, Syncing, Standby, Buffering).
+   - Matching vinyl album artwork and track metadata.
+   - Synchronized playback progress indicator and stereo frequency visualizer.
+   - Individual listener volume slider and mute toggle.
+   - Audio output routing (Built-in Speaker vs Bluetooth Speaker vs Headphones).
+   - Precision manual latency adjustment slider (-250ms to +350ms in 5ms steps).
+
+4. **Device Management Screen**:
+   - Total connected devices overview, receiver breakdown, and average RTT latency.
+   - Device cards showing Device Name, Platform (Android, iOS, Windows, Mac, Linux), IP address, audio output mode, and connection status.
+   - Real-time Clock Offset and RTT latency diagnostics.
+   - Remote volume control slider and mute toggle for each individual receiver.
+   - **Disconnect Device** action with confirmation modal to kick or disconnect endpoints remotely.
+
+5. **Settings Screen**:
+   - **Audio Quality**: Sample rate selector (44.1 kHz Standard CD Quality vs 48.0 kHz Pro Studio Audio).
+   - **Buffer Configuration**: Broadcast schedule delay presets (Low Latency 350ms, Balanced 650ms, High Stability 1000ms).
+   - **Device Name**: User-customizable device name persisted in `localStorage` and synchronized with the host server.
+   - **Network Information**: All local IPv4 network adapters, gateway, Hotspot detection, and server uptime.
+   - **Synchronization Diagnostics**: Real-time NTP clock offset, RTT latency, jitter standard deviation, total samples, and **Re-sync Clock** trigger.
 
 3. **Time Synchronization Engine (`client/src/core/sync/timeSync.ts` & `server/src/services/syncEngineService.ts`)**:
    - High-resolution monotonic server clock (`process.hrtime.bigint`).

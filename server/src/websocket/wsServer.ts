@@ -291,6 +291,26 @@ export class EchoCastWsServer {
         break;
       }
 
+      case 'REMOTE_DISCONNECT_RECEIVER': {
+        const { targetDeviceId, reason } = message.payload;
+        const targetSocket = this.clientSockets.get(targetDeviceId);
+        if (targetSocket) {
+          this.send(targetSocket, {
+            type: 'REMOTE_DISCONNECT_RECEIVER',
+            payload: { targetDeviceId, reason: reason || 'Disconnected by host' },
+            timestamp: serverTimestamp,
+          });
+          setTimeout(() => {
+            targetSocket.terminate();
+            this.clientSockets.delete(targetDeviceId);
+            deviceManager.removeDevice(targetDeviceId);
+          }, 100);
+        } else {
+          deviceManager.removeDevice(targetDeviceId);
+        }
+        break;
+      }
+
       default:
         wsLogger.warn(`Unhandled message type: ${(message as any).type}`);
     }

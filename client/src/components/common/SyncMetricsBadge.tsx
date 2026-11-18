@@ -51,7 +51,7 @@ export const SyncMetricsBadge: React.FC<Props> = ({ metrics, compact = false }) 
   }
 
   return (
-    <div className={`flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl border bg-slate-900/60 backdrop-blur-sm ${current.color}`}>
+    <div className={`flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl border bg-charcoal-850 border-charcoal-750 ${current.color}`}>
       <div className="flex items-center gap-2">
         <span className={`w-2.5 h-2.5 rounded-full animate-pulse ${current.dot}`} />
         <div>

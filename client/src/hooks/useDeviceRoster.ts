@@ -33,11 +33,20 @@ export function useDeviceRoster() {
     });
   }, []);
 
+  const disconnectRemoteReceiver = useCallback((targetDeviceId: string, reason?: string) => {
+    wsClient.send({
+      type: 'REMOTE_DISCONNECT_RECEIVER',
+      payload: { targetDeviceId, reason },
+      timestamp: Date.now(),
+    });
+  }, []);
+
   return {
     devices,
     receivers,
     sender,
     setRemoteReceiverVolume,
     muteRemoteReceiver,
+    disconnectRemoteReceiver,
   };
 }

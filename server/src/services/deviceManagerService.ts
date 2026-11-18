@@ -59,6 +59,7 @@ export class DeviceManagerService {
       ipAddress: ipAddress || existing?.ipAddress,
       userAgent: payload.userAgent || existing?.userAgent,
       audioBufferReady: false,
+      roomId: payload.roomId || existing?.roomId || 'ECHO-CAST',
     };
 
     this.devices.set(deviceId, device);
@@ -86,6 +87,7 @@ export class DeviceManagerService {
     if (updates.isMuted !== undefined) device.isMuted = updates.isMuted;
     if (updates.batteryPercent !== undefined) device.batteryPercent = updates.batteryPercent;
     if (updates.audioBufferReady !== undefined) device.audioBufferReady = updates.audioBufferReady;
+    if (updates.roomId !== undefined) device.roomId = updates.roomId;
 
     device.lastPingAt = Date.now();
     this.devices.set(deviceId, device);

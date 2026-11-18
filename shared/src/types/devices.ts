@@ -36,6 +36,7 @@ export interface DeviceInfo {
   ipAddress?: string;
   userAgent?: string;
   audioBufferReady?: boolean;
+  roomId?: string;
 }
 
 export interface DeviceRegistrationPayload {
@@ -44,6 +45,7 @@ export interface DeviceRegistrationPayload {
   platform: DevicePlatform;
   outputType: DeviceAudioOutput;
   userAgent?: string;
+  roomId?: string;
 }
 
 export interface DeviceStateUpdatePayload {
@@ -56,4 +58,5 @@ export interface DeviceStateUpdatePayload {
   isMuted?: boolean;
   batteryPercent?: number;
   audioBufferReady?: boolean;
+  roomId?: string;
 }

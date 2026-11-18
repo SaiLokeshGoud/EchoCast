@@ -19,6 +19,7 @@ export interface AudioTrackMetadata {
   sampleRate?: number;
   channels?: number;
   addedAt: number;
+  albumArtUrl?: string;
 }
 
 export type PlaybackState = 'idle' | 'buffering' | 'ready' | 'playing' | 'paused' | 'stopped';
