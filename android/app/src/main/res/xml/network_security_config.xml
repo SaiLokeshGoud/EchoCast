@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Allow cleartext HTTP across all private Local Area Network subnets and loopback -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Loopback -->
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <!-- Standard Home Wi-Fi Router Subnets -->
+        <domain includeSubdomains="true">192.168.0.1</domain>
+        <domain includeSubdomains="true">192.168.1.1</domain>
+        <!-- Android Hotspot Subnet -->
+        <domain includeSubdomains="true">192.168.43.1</domain>
+        <!-- Windows Hotspot Subnet -->
+        <domain includeSubdomains="true">192.168.137.1</domain>
+        <!-- iOS Hotspot Subnet -->
+        <domain includeSubdomains="true">172.20.10.1</domain>
+    </domain-config>
+</network-security-config>

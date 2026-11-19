@@ -1,0 +1,20 @@
+{
+  "appId": "com.echocast.app",
+  "appName": "EchoCast",
+  "webDir": "../client/dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "cleartext": true,
+    "allowNavigation": [
+      "192.168.*.*",
+      "10.*.*.*",
+      "172.*.*.*",
+      "localhost"
+    ]
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  }
+}

@@ -700,6 +700,9 @@ async function runSyncEngineTests() {
     if (senderWs) senderWs.close();
     receiverSockets.forEach((ws) => ws.close());
     serverProc.kill();
+    setTimeout(() => {
+      process.exit(process.exitCode || 0);
+    }, 200);
   }
 }
 
