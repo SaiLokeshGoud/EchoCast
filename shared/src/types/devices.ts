@@ -18,6 +18,7 @@ export type DeviceStatus =
   | 'playing'
   | 'paused'
   | 'error'
+  | 'reconnecting'
   | 'disconnected';
 
 export interface DeviceInfo {

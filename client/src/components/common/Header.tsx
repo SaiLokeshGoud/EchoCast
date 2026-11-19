@@ -67,6 +67,11 @@ export const Header: React.FC<Props> = ({
       icon: Radio,
       label: 'Reconnecting',
     },
+    recovering: {
+      color: 'bg-cyanAccent-500/10 text-cyanAccent-400 border-cyanAccent-500/30',
+      icon: Radio,
+      label: 'Recovering Session',
+    },
     disconnected: {
       color: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
       icon: AlertCircle,

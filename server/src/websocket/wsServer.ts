@@ -17,6 +17,10 @@ const wsLogger = logger.forContext('WsServer');
 interface ExtendedWebSocket extends WebSocket {
   deviceId?: string;
   isAlive: boolean;
+  missedPings?: number;
+  lastPingSentAt?: number;
+  lastSeenAt?: number;
+  connectedAt?: number;
   ipAddress?: string;
 }
 
@@ -30,8 +34,12 @@ export class EchoCastWsServer {
 
     this.wss.on('connection', (ws: ExtendedWebSocket, req) => {
       const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+      const now = Date.now();
       ws.ipAddress = ip.replace(/^.*:/, ''); // Strip IPv6 prefix if IPv4 mapped
       ws.isAlive = true;
+      ws.missedPings = 0;
+      ws.connectedAt = now;
+      ws.lastSeenAt = now;
 
       // Temporary ID until registration
       const tempId = crypto.randomUUID();
@@ -42,10 +50,16 @@ export class EchoCastWsServer {
 
       ws.on('pong', () => {
         ws.isAlive = true;
+        ws.missedPings = 0;
+        ws.lastSeenAt = Date.now();
       });
 
       ws.on('message', (data) => {
         try {
+          ws.isAlive = true;
+          ws.missedPings = 0;
+          ws.lastSeenAt = Date.now();
+
           const raw = data.toString();
           if (raw.length > 65536) {
             this.sendError(ws, 'PAYLOAD_TOO_LARGE', 'WebSocket payload exceeds 64KB limit');
@@ -66,8 +80,8 @@ export class EchoCastWsServer {
       ws.on('close', () => {
         if (ws.deviceId) {
           this.clientSockets.delete(ws.deviceId);
-          deviceManager.removeDevice(ws.deviceId);
-          wsLogger.info(`Client disconnected: ${ws.deviceId}`);
+          deviceManager.markDeviceDisconnecting(ws.deviceId);
+          wsLogger.info(`Client socket closed: ${ws.deviceId} (entered reconnection grace period)`);
         }
       });
 
@@ -85,19 +99,44 @@ export class EchoCastWsServer {
       });
     });
 
-    // Start heartbeat interval to reap dead connections
+    // Start heartbeat interval to tolerate network jitter and reap genuinely dead connections
     this.heartbeatInterval = setInterval(() => {
       if (!this.wss) return;
+      const now = Date.now();
+
       for (const [deviceId, ws] of this.clientSockets.entries()) {
-        if (!ws.isAlive) {
-          wsLogger.warn(`Client ${deviceId} timed out, terminating.`);
-          ws.terminate();
+        // If socket is already closed or closing, clean up
+        if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
           this.clientSockets.delete(deviceId);
-          deviceManager.removeDevice(deviceId);
+          deviceManager.markDeviceDisconnecting(deviceId);
           continue;
         }
+
+        const timeSinceLastSeen = now - (ws.lastSeenAt || ws.connectedAt || now);
+
+        // Tolerate temporary delays: do not terminate on a single missed ping
+        if (ws.isAlive === false) {
+          ws.missedPings = (ws.missedPings || 0) + 1;
+          if (ws.missedPings >= 2 || timeSinceLastSeen > config.heartbeatTimeoutMs) {
+            wsLogger.warn(`Client ${deviceId} timed out (missed ${ws.missedPings} pings, silent for ${timeSinceLastSeen}ms), terminating.`);
+            try {
+              ws.terminate();
+            } catch {}
+            this.clientSockets.delete(deviceId);
+            deviceManager.markDeviceDisconnecting(deviceId);
+            continue;
+          }
+        } else {
+          ws.missedPings = 0;
+        }
+
         ws.isAlive = false;
-        ws.ping();
+        ws.lastPingSentAt = now;
+        try {
+          ws.ping();
+        } catch {
+          // Socket might have closed
+        }
       }
     }, config.heartbeatIntervalMs);
 
@@ -213,7 +252,13 @@ export class EchoCastWsServer {
         }
 
         // Support reconnecting with existing deviceId from client storage, or use current / new UUID
-        const deviceId = payload.deviceId || ws.deviceId || crypto.randomUUID();
+        const oldId = ws.deviceId;
+        const deviceId = payload.deviceId || oldId || crypto.randomUUID();
+
+        // Remove old/temp ID from clientSockets map so it is not iterated as a duplicate socket
+        if (oldId && oldId !== deviceId) {
+          this.clientSockets.delete(oldId);
+        }
 
         // If an older stale socket is still hanging for this deviceId, gracefully terminate it
         const existingSocket = this.clientSockets.get(deviceId);

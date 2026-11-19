@@ -187,8 +187,14 @@ export class WebAudioEngine {
   private setupVisibilityWakeLockListener() {
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible' && this.state === 'playing') {
-          this.requestWakeLock();
+        if (document.visibilityState === 'visible') {
+          // Attempt to resume audio context if iOS Safari suspended or interrupted it
+          if (this.ctx && (this.ctx.state === 'suspended' || (this.ctx.state as any) === 'interrupted')) {
+            this.ctx.resume().catch(() => {});
+          }
+          if (this.state === 'playing') {
+            this.requestWakeLock();
+          }
         }
       });
     }
@@ -237,6 +243,10 @@ export class WebAudioEngine {
 
   public isUnlocked(): boolean {
     return this.ctx !== null && this.ctx.state === 'running';
+  }
+
+  public isPlaying(): boolean {
+    return this.state === 'playing';
   }
 
   public getState(): AudioEngineState {
@@ -549,12 +559,11 @@ export class WebAudioEngine {
     const currentServerTime = timeSync.getServerTime();
 
     // Avoid unnecessary playback restarts:
-    // If we are already playing the same track and generation matches, check drift
+    // If we are already playing the same track, do not restart audio!
     if (
       this.state === 'playing' &&
       this.currentSourceNode &&
-      this.currentTrack &&
-      generation === this.currentGeneration
+      this.currentTrack
     ) {
       const currentPos = this.getCurrentPosition();
       let expectedPos = startPositionSec;
@@ -564,16 +573,14 @@ export class WebAudioEngine {
       }
       const driftSec = Math.abs(currentPos - expectedPos);
 
-      // If drift is less than 45ms, receiver is already synchronized in phase!
-      if (driftSec < 0.045) {
-        return;
-      }
-
-      // If drift is small (45ms to 150ms), gently adjust playback rate without audible restart
-      if (driftSec < 0.150 && this.ctx) {
-        const rate = currentPos < expectedPos ? 1.015 : 0.985;
-        this.currentSourceNode.playbackRate.setValueAtTime(rate, this.ctx.currentTime);
-        this.currentSourceNode.playbackRate.setValueAtTime(1.0, this.ctx.currentTime + 0.35);
+      // If drift is under 150ms, receiver is already synchronized in phase!
+      // Do NOT restart or stop playback; gently steer rate if needed
+      if (driftSec < 0.150) {
+        if (driftSec > 0.040 && this.ctx) {
+          const rate = currentPos < expectedPos ? 1.015 : 0.985;
+          this.currentSourceNode.playbackRate.setValueAtTime(rate, this.ctx.currentTime);
+          this.currentSourceNode.playbackRate.setValueAtTime(1.0, this.ctx.currentTime + 0.35);
+        }
         return;
       }
     }
@@ -763,6 +770,16 @@ export class WebAudioEngine {
       active: this.isDriftCorrectionActive,
       rate: this.driftCorrectionRate,
     };
+  }
+
+  /**
+   * Pause playback immediately
+   */
+  public pause() {
+    this.stopActiveSource();
+    this.state = 'paused';
+    this.updateMediaSession(this.currentTrack, false);
+    this.notify();
   }
 
   /**

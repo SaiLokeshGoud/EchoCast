@@ -30,11 +30,12 @@ import {
 import { AudioVisualizer } from '../common/AudioVisualizer';
 import { SyncMetricsBadge } from '../common/SyncMetricsBadge';
 import { AudioEngineState } from '../../core/audio/webAudioEngine';
+import { WsConnectionStatus } from '../../core/network/wsClient';
 
 interface Props {
   currentRoomId: string;
   isRoomActive?: boolean;
-  connectionStatus: 'connected' | 'connecting' | 'disconnected' | 'reconnecting';
+  connectionStatus: WsConnectionStatus;
   roomValidationError?: string | null;
   senderInfo?: {
     primaryUrl: string;
@@ -268,6 +269,23 @@ export const ReceiverDashboard: React.FC<Props> = ({
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto pb-8">
+      {/* Subtle Non-Blocking Reconnecting / Recovering Banner */}
+      {(connectionStatus === 'reconnecting' || connectionStatus === 'recovering') && (
+        <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 flex items-center justify-between gap-3 text-xs shadow-md">
+          <div className="flex items-center gap-2.5">
+            <RotateCw className="w-4 h-4 shrink-0 text-amber-400 animate-spin" />
+            <span>
+              {connectionStatus === 'recovering'
+                ? 'Network link restored. Recovering synchronized room session...'
+                : 'Connection interrupted. Reconnecting to local stream automatically...'}
+            </span>
+          </div>
+          <span className="text-[10px] uppercase font-mono tracking-wider font-bold text-amber-400/80 shrink-0">
+            Audio Intact
+          </span>
+        </div>
+      )}
+
       {/* Room Inactive / Closed Notice */}
       {!isRoomActive && (
         <div className="p-4 rounded-2xl bg-charcoal-900 border border-amber-500/30 text-amber-300 flex items-center gap-3 text-xs shadow-md">
@@ -376,8 +394,26 @@ export const ReceiverDashboard: React.FC<Props> = ({
         <div className="pt-3 border-t border-charcoal-800 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1.5 font-mono">
-              <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
-              <span className="text-slate-300 font-semibold">{isConnected ? 'Connected' : 'Disconnected'}</span>
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  connectionStatus === 'connected'
+                    ? 'bg-emerald-400 animate-pulse'
+                    : connectionStatus === 'recovering'
+                    ? 'bg-cyanAccent-400 animate-pulse'
+                    : connectionStatus === 'reconnecting'
+                    ? 'bg-amber-400 animate-ping'
+                    : 'bg-slate-500'
+                }`}
+              />
+              <span className="text-slate-300 font-semibold">
+                {connectionStatus === 'connected'
+                  ? 'Connected'
+                  : connectionStatus === 'recovering'
+                  ? 'Recovering Session...'
+                  : connectionStatus === 'reconnecting'
+                  ? 'Reconnecting...'
+                  : 'Offline'}
+              </span>
             </div>
 
             {senderInfo?.primaryUrl && (

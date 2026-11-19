@@ -174,10 +174,10 @@ async function runComprehensiveReliabilityTests() {
   }
 
   console.log(`[TEST SETUP] Launching test EchoCast server instance on port ${PORT}...`);
-  const serverProc = spawn('npx', ['tsx', 'server/src/index.ts'], {
+  const tsxCli = path.resolve(__dirname, '../node_modules/tsx/dist/cli.mjs');
+  const serverProc = spawn(process.execPath, [tsxCli, 'server/src/index.ts'], {
     cwd: path.resolve(__dirname, '..'),
     env: { ...process.env, PORT, NODE_ENV: 'test', LOG_LEVEL: 'warn' },
-    shell: true,
   });
 
   serverProc.stdout.on('data', () => {});
@@ -429,7 +429,12 @@ async function runComprehensiveReliabilityTests() {
     await wait(300);
 
     const disconnectRoster = senderMessages.filter((m) => m.type === 'DEVICE_LIST').pop()?.payload?.filter((d) => d.role === 'receiver') || [];
-    assert(disconnectRoster.length === 9, 'Scenario 7: Dropped receiver cleanly detected by WebSocket server');
+    const droppedDev = disconnectRoster.find((d) => d.id === dropTarget.id);
+    const connectedReceivers = disconnectRoster.filter((d) => d.status === 'connected');
+    assert(
+      (droppedDev && droppedDev.status === 'reconnecting') || connectedReceivers.length === 9,
+      'Scenario 7: Dropped receiver cleanly detected by WebSocket server (entered reconnecting grace period)'
+    );
 
     // -------------------------------------------------------------------------
     // SCENARIO 8: Receiver Reconnects (Session Recovery, No Duplicate Rows)

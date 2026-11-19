@@ -9,7 +9,7 @@ EchoCast is a zero-cloud, cross-platform, multi-device synchronized audio broadc
 - **[INSTALLATION.md](file:///c:/Users/Lokesh/Desktop/web%20echo%20cast/INSTALLATION.md)**: Prerequisites, step-by-step setup, production building, firewall rules, and deployment.
 - **[USER_GUIDE.md](file:///c:/Users/Lokesh/Desktop/web%20echo%20cast/USER_GUIDE.md)**: Sender workflows, receiver onboarding, playlist management, group controls, and Bluetooth calibration.
 - **[NETWORK_SETUP.md](file:///c:/Users/Lokesh/Desktop/web%20echo%20cast/NETWORK_SETUP.md)**: Home Wi-Fi, Android/iPhone/Windows mobile hotspots, offline operation, and router AP isolation fixes.
-- **[TEST_REPORT.md](file:///c:/Users/Lokesh/Desktop/web%20echo%20cast/TEST_REPORT.md)**: Full verification results (96/96 automated tests passing across 4 comprehensive suites).
+- **[TEST_REPORT.md](file:///c:/Users/Lokesh/Desktop/web%20echo%20cast/TEST_REPORT.md)**: Full verification results (112/112 automated tests passing across 5 comprehensive suites).
 - **[KNOWN_LIMITATIONS.md](file:///c:/Users/Lokesh/Desktop/web%20echo%20cast/KNOWN_LIMITATIONS.md)**: Browser autoplay policies, mobile tab throttling, Bluetooth A2DP latency, and mitigation strategies.
 - **[HOTSPOT_SETUP_GUIDE.md](file:///c:/Users/Lokesh/Desktop/web%20echo%20cast/HOTSPOT_SETUP_GUIDE.md)**: Dedicated quick-reference for hotspot streaming.
 
@@ -135,7 +135,7 @@ The server binds to `0.0.0.0:4000` and displays your local IP addresses:
 EchoCast includes a comprehensive automated test harness covering streaming, synchronization, device management, and failure recovery:
 
 ```bash
-# Run all 96 automated tests across all 4 suites
+# Run all 112 automated tests across all 5 suites
 npm run test:all
 ```
 
@@ -144,8 +144,9 @@ Individual test suites:
 - `npm run test:sync`: SNTP clock sync, skew compensation, future scheduled playback, dynamic drift correction (20 tests).
 - `npm run test:devices`: Multi-device roster, group controls (Play All, Pause All, Seek All, Master Volume), individual volume isolation, duplicate session prevention (20 tests).
 - `npm test`: 13 real-world scenarios (Wi-Fi, hotspot, dropouts, reconnections, buffer underruns, IP migrations) and security protections (25 tests).
+- `npm run test:safari`: iPhone Safari reconnection longevity, 20s disconnection grace period, session recovery, and no-jump audio continuity (16 tests).
 
-**Result**: **96 / 96 Passed (100% Success Rate)**. See [TEST_REPORT.md](file:///c:/Users/Lokesh/Desktop/web%20echo%20cast/TEST_REPORT.md) for full benchmark logs.
+**Result**: **112 / 112 Passed (100% Success Rate)**. See [TEST_REPORT.md](file:///c:/Users/Lokesh/Desktop/web%20echo%20cast/TEST_REPORT.md) for full benchmark logs.
 
 ---
 

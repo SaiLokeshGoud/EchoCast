@@ -171,7 +171,7 @@ For users who want a packaged desktop runner with global media keys and no brows
 
 Verify the entire system before deploying to multiple devices:
 ```bash
-# Run all 4 test suites (96 tests total)
+# Run all 5 test suites (112 tests total)
 npm run test:all
 ```
 Individual test suites:
@@ -179,3 +179,4 @@ Individual test suites:
 - `npm run test:sync`: NTP clock synchronization, scheduled playback, drift correction.
 - `npm run test:devices`: Multi-device roster, group controls, duplicate session prevention.
 - `npm test`: Comprehensive 25-scenario reliability, network failover, and security suite.
+- `npm run test:safari`: iPhone Safari reconnection, grace period, and session recovery suite.

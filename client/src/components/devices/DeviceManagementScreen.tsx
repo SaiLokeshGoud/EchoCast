@@ -117,6 +117,8 @@ export const DeviceManagementScreen: React.FC<Props> = ({
         return { label: 'Ready', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' };
       case 'buffering':
         return { label: 'Buffering', color: 'bg-amber-500/10 text-amber-400 border-amber-500/20' };
+      case 'reconnecting':
+        return { label: 'Reconnecting...', color: 'bg-amber-500/10 text-amber-400 border-amber-500/20' };
       case 'disconnected':
         return { label: 'Offline', color: 'bg-rose-500/10 text-rose-400 border-rose-500/20' };
       default:

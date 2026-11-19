@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   DeviceRole,
   DevicePlatform,
@@ -168,20 +168,55 @@ export function App() {
     fetchTracks();
   }, [fetchTracks]);
 
-  // Connect WebSocket and setup message handlers
+  // Keep mutable application state in a stable ref for WebSocket event handlers & telemetry
+  const stateRefs = useRef({
+    deviceName,
+    role,
+    platform,
+    outputType,
+    roomId,
+    authToken,
+    engineState,
+    syncMetrics,
+    manualOffsetMs,
+    bufferProgress,
+    volume,
+    isMuted,
+    isPlaying,
+  });
+
+  useEffect(() => {
+    stateRefs.current = {
+      deviceName,
+      role,
+      platform,
+      outputType,
+      roomId,
+      authToken,
+      engineState,
+      syncMetrics,
+      manualOffsetMs,
+      bufferProgress,
+      volume,
+      isMuted,
+      isPlaying,
+    };
+  });
+
+  // Connect WebSocket and setup message handlers (runs once on mount)
   useEffect(() => {
     const unbindStatus = wsClient.onStatusChange((s) => {
       setConnectionStatus(s);
-      if (s === 'connected') {
-        // Register this device with the server
+      if (s === 'connecting' || s === 'recovering') {
+        const { deviceName: dName, role: dRole, platform: dPlat, outputType: dOut, roomId: dRoom, authToken: dAuth } = stateRefs.current;
         wsClient.register({
-          name: deviceName,
-          role,
-          platform,
-          outputType,
+          name: dName,
+          role: dRole,
+          platform: dPlat,
+          outputType: dOut,
           userAgent: navigator.userAgent,
-          roomId,
-          authToken,
+          roomId: dRoom,
+          authToken: dAuth,
         });
       }
     });
@@ -213,10 +248,15 @@ export function App() {
         setRequireAuth(state.requireAuth);
       }
       if (state.currentTrack) {
-        webAudioEngine.loadTrack(state.currentTrack);
+        if (webAudioEngine.getCurrentTrack()?.id !== state.currentTrack.id) {
+          webAudioEngine.loadTrack(state.currentTrack);
+        }
       }
       if (state.isPlaying && state.scheduledStartTime) {
+        // If already playing this track in sync, schedulePlay will smoothly preserve playback
         webAudioEngine.schedulePlay(state.scheduledStartTime, state.positionSec, state.generation);
+      } else if (!state.isPlaying && webAudioEngine.isPlaying()) {
+        webAudioEngine.pause();
       }
     });
 
@@ -326,48 +366,36 @@ export function App() {
       unbindError();
       unbindNetwork();
     };
-  }, [deviceName, role, platform, outputType, roomId, authToken, fetchTracks, webAudioEngine, setVolume, setMuted]);
+  }, []);
 
   // Periodic heartbeat reporting local telemetry, playback position, and sync error to server
   useEffect(() => {
     if (connectionStatus !== 'connected') return;
 
     const interval = setInterval(() => {
+      const s = stateRefs.current;
       wsClient.updateDeviceState({
-        status: engineState === 'playing' ? 'playing' : engineState === 'buffering' ? 'buffering' : 'ready',
-        roundTripTimeMs: syncMetrics.roundTripTimeMs,
-        clockOffsetMs: syncMetrics.clockOffsetMs,
-        jitterMs: syncMetrics.jitterMs,
-        manualAdjustmentMs: manualOffsetMs,
-        effectiveLatencyMs: syncMetrics.effectiveTotalLatencyMs,
+        status: s.engineState === 'playing' ? 'playing' : s.engineState === 'buffering' ? 'buffering' : 'ready',
+        roundTripTimeMs: s.syncMetrics.roundTripTimeMs,
+        clockOffsetMs: s.syncMetrics.clockOffsetMs,
+        jitterMs: s.syncMetrics.jitterMs,
+        manualAdjustmentMs: s.manualOffsetMs,
+        effectiveLatencyMs: s.syncMetrics.effectiveTotalLatencyMs,
         syncErrorMs: webAudioEngine.getCurrentSyncErrorMs(),
-        playbackPositionSec: positionSec,
-        bufferHealth: engineState === 'buffering' ? 'buffering' : bufferProgress < 100 ? 'buffering' : 'good',
-        bufferProgress,
-        syncQuality: syncMetrics.quality,
-        volume,
-        isMuted,
-        outputType,
-        audioBufferReady: engineState === 'ready' || engineState === 'playing',
-        roomId,
+        playbackPositionSec: webAudioEngine.getCurrentPosition(),
+        bufferHealth: s.engineState === 'buffering' ? 'buffering' : s.bufferProgress < 100 ? 'buffering' : 'good',
+        bufferProgress: s.bufferProgress,
+        syncQuality: s.syncMetrics.quality,
+        volume: s.volume,
+        isMuted: s.isMuted,
+        outputType: s.outputType,
+        audioBufferReady: s.engineState === 'ready' || s.engineState === 'playing',
+        roomId: s.roomId,
       });
-    }, isPlaying ? 1500 : 3500);
+    }, 3500);
 
     return () => clearInterval(interval);
-  }, [
-    connectionStatus,
-    syncMetrics,
-    manualOffsetMs,
-    volume,
-    isMuted,
-    outputType,
-    engineState,
-    bufferProgress,
-    positionSec,
-    isPlaying,
-    roomId,
-    webAudioEngine,
-  ]);
+  }, [connectionStatus]);
 
   // Screen navigation handler
   const handleNavigate = (screen: AppScreen) => {
@@ -547,6 +575,11 @@ export function App() {
     handlePlay(0);
   }, [activePlaylist, currentTrack, handleSelectTrack]);
 
+  const handleOutputTypeChange = useCallback((type: DeviceAudioOutput) => {
+    setOutputType(type);
+    wsClient.updateDeviceState({ outputType: type });
+  }, [setOutputType]);
+
   const handleNextTrack = useCallback(() => {
     if (activePlaylist.length === 0) return;
     const currentIndex = activePlaylist.findIndex((t) => t.id === currentTrack?.id);
@@ -718,7 +751,7 @@ export function App() {
             onUnlockAudio={unlockAudio}
             onVolumeChange={setVolume}
             onMuteToggle={() => setMuted(!isMuted)}
-            onOutputTypeChange={setOutputType}
+            onOutputTypeChange={handleOutputTypeChange}
             onManualOffsetChange={(ms) => {
               setManualOffset(ms);
               setManualAdjustment(ms);

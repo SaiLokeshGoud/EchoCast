@@ -19,7 +19,8 @@
     "test:sync": "node server/test-sync-engine.mjs",
     "test:streaming": "node server/test-streaming-engine.mjs",
     "test:devices": "node server/test-device-management.mjs",
-    "test:all": "npm test && npm run test:sync && npm run test:streaming && npm run test:devices"
+    "test:safari": "node server/test-ios-safari-stability.mjs",
+    "test:all": "npm test && npm run test:sync && npm run test:streaming && npm run test:devices && npm run test:safari"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

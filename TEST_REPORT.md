@@ -2,14 +2,14 @@
 
 **Test Execution Date**: 2026-11-19  
 **Platform**: Node.js v26.3.1 (Windows 64-bit)  
-**Total Automated Tests**: 96 / 96 Passed (100% Success Rate)  
+**Total Automated Tests**: 112 / 112 Passed (100% Success Rate)  
 **Status**: Production Quality Verified ✓✓✓
 
 ---
 
 ## 1. Executive Summary
 
-EchoCast has undergone comprehensive automated validation across four specialized test suites simulating real-world network variations, device heterogeneity (Android, iOS, Windows, Mac, Linux), high-concurrency loads (up to 10 simultaneous receiver endpoints), network packet jitter, temporary drops, dynamic IP migrations, and malicious payload security injections.
+EchoCast has undergone comprehensive automated validation across five specialized test suites simulating real-world network variations, device heterogeneity (Android, iOS, Windows, Mac, Linux), high-concurrency loads (up to 10 simultaneous receiver endpoints), network packet jitter, temporary drops, dynamic IP migrations, malicious payload security injections, and real-world iPhone Safari disconnection/reconnection longevity.
 
 | Test Suite File | Domain / Subsystem | Total Tests | Passed | Failed | Status |
 | :--- | :--- | :---: | :---: | :---: | :---: |
@@ -17,7 +17,8 @@ EchoCast has undergone comprehensive automated validation across four specialize
 | `server/test-sync-engine.mjs` | SNTP Clock Sync & Drift Correction | 20 | 20 | 0 | **100% PASS** |
 | `server/test-device-management.mjs` | Multi-Device Roster & Group Controls | 20 | 20 | 0 | **100% PASS** |
 | `server/test-comprehensive-reliability.mjs` | 13 Real-World Scenarios & Security | 25 | 25 | 0 | **100% PASS** |
-| **GRAND TOTAL** | **Entire EchoCast Application** | **96** | **96** | **0** | **100% PASS** |
+| `server/test-ios-safari-stability.mjs` | iPhone Safari Longevity, Grace Period & Sync | 16 | 16 | 0 | **100% PASS** |
+| **GRAND TOTAL** | **Entire EchoCast Application** | **112** | **112** | **0** | **100% PASS** |
 
 ---
 
@@ -106,7 +107,20 @@ This suite tests all 13 required real-world failure scenarios and security prote
 
 ---
 
-## 6. Performance Benchmarks
+## 6. Test Suite 5: iPhone Safari Longevity & Stability (16/16 Passed)
+
+This suite specifically evaluates the real-world iOS Safari connection lifecycle:
+- **Test 1: Sender Host Registration**: Sender registered on local network room.
+- **Test 2: iPhone 10 Client Initial Registration**: Persistent UUID registration confirmed, iOS platform identified, Bluetooth speaker mode saved.
+- **Test 3: Heartbeat Longevity & Multi-Ping Tolerance**: Verified socket remains open during extended playback periods without premature server timeouts.
+- **Test 4: Disconnection Grace Period**: Upon abrupt socket close (simulating Wi-Fi toggle or screen lock), the iPhone is preserved in the room roster under `status: 'reconnecting'` with a 20-second grace timer (0 roster flickering).
+- **Test 5: Reconnection & Session Restoration**: Reconnecting with stored UUID seamlessly restores `status: 'connected'`, keeps volume and Bluetooth profile, and produces 0 duplicate rows.
+- **Test 6: Playback State Synchronization on Reconnect**: Verified accurate `positionSec` delivery without doubled timestamps or audio restarting.
+- **Test 7: Remote Controls Across Reconnected Session**: Host volume changes (75%) delivered successfully to reconnected iPhone.
+
+---
+
+## 7. Performance Benchmarks
 
 - **Max Tested Concurrent Receivers**: 10 active devices.
 - **Audio Delivery Latency**: Average 9ms–21ms for 10 concurrent chunk requests.

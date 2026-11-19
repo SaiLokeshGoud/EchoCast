@@ -128,10 +128,10 @@ async function runStreamingEngineTests() {
 
   // Start real EchoCast server on port 4020
   console.log(`[TEST SETUP] Launching EchoCast test instance on port ${PORT}...`);
-  const serverProc = spawn('npx', ['tsx', 'server/src/index.ts'], {
+  const tsxCli = path.resolve(__dirname, '../node_modules/tsx/dist/cli.mjs');
+  const serverProc = spawn(process.execPath, [tsxCli, 'server/src/index.ts'], {
     cwd: path.resolve(__dirname, '..'),
     env: { ...process.env, PORT, NODE_ENV: 'test', LOG_LEVEL: 'warn' },
-    shell: true,
   });
 
   serverProc.stdout.on('data', (d) => {

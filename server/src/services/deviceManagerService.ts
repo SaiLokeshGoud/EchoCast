@@ -13,6 +13,7 @@ export type DeviceChangeCallback = (devices: DeviceInfo[]) => void;
 export class DeviceManagerService {
   private devices: Map<string, DeviceInfo> = new Map();
   private changeListeners: Set<DeviceChangeCallback> = new Set();
+  private graceTimers: Map<string, NodeJS.Timeout> = new Map();
 
   public subscribe(cb: DeviceChangeCallback): () => void {
     this.changeListeners.add(cb);
@@ -40,12 +41,20 @@ export class DeviceManagerService {
   ): DeviceInfo {
     const now = Date.now();
 
+    // Cancel any pending disconnection grace timer for this device
+    const pendingTimer = this.graceTimers.get(deviceId);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      this.graceTimers.delete(deviceId);
+      devLogger.info(`Cancelled disconnect grace timer for reconnecting device ${deviceId}`);
+    }
+
     // Duplicate session mitigation: if another device with the same IP and name exists (e.g. from browser reload), clean it up
     if (ipAddress && payload.role === 'receiver') {
       for (const [id, d] of this.devices.entries()) {
         if (id !== deviceId && d.ipAddress === ipAddress && d.name === payload.name && d.role === payload.role) {
           devLogger.info(`Cleaning up stale duplicate session ${id} for device ${payload.name} (${ipAddress})`);
-          this.devices.delete(id);
+          this.removeDevice(id);
         }
       }
     }
@@ -54,10 +63,10 @@ export class DeviceManagerService {
 
     const device: DeviceInfo = {
       id: deviceId,
-      name: payload.name || `Device-${deviceId.substring(0, 4)}`,
+      name: (payload.name && payload.name.trim()) || existing?.name || `Device-${deviceId.substring(0, 4)}`,
       role: payload.role,
-      platform: payload.platform || 'other',
-      outputType: payload.outputType || 'speaker',
+      platform: payload.platform || existing?.platform || 'other',
+      outputType: payload.outputType || existing?.outputType || 'speaker',
       status: 'connected',
       roundTripTimeMs: existing?.roundTripTimeMs || 0,
       clockOffsetMs: existing?.clockOffsetMs || 0,
@@ -69,7 +78,7 @@ export class DeviceManagerService {
       lastPingAt: now,
       ipAddress: ipAddress || existing?.ipAddress,
       userAgent: payload.userAgent || existing?.userAgent,
-      audioBufferReady: false,
+      audioBufferReady: existing?.audioBufferReady ?? false,
       roomId: payload.roomId || existing?.roomId || 'ECHO-CAST',
     };
 
@@ -77,6 +86,37 @@ export class DeviceManagerService {
     devLogger.info(`Device registered: [${device.role}] ${device.name} (${device.id}) via ${device.ipAddress || 'unknown'}`);
     this.notify();
     return device;
+  }
+
+  /**
+   * Mark a device as reconnecting with a grace period before permanently removing it.
+   * Prevents premature device drops and roster fluttering on temporary Wi-Fi blips.
+   */
+  public markDeviceDisconnecting(deviceId: string, gracePeriodMs: number = 20000): void {
+    const device = this.devices.get(deviceId);
+    if (!device) return;
+
+    // Clear any previous timer
+    const prevTimer = this.graceTimers.get(deviceId);
+    if (prevTimer) {
+      clearTimeout(prevTimer);
+    }
+
+    device.status = 'reconnecting';
+    devLogger.info(`Device [${device.name}] marked as reconnecting. Starting ${gracePeriodMs}ms grace period.`);
+    this.notify();
+
+    const timer = setTimeout(() => {
+      this.graceTimers.delete(deviceId);
+      const target = this.devices.get(deviceId);
+      if (target && target.status === 'reconnecting') {
+        this.devices.delete(deviceId);
+        devLogger.info(`Grace period expired for device ${target.name} (${deviceId}). Removed from roster.`);
+        this.notify();
+      }
+    }, gracePeriodMs);
+
+    this.graceTimers.set(deviceId, timer);
   }
 
   /**
@@ -125,9 +165,15 @@ export class DeviceManagerService {
   }
 
   /**
-   * Remove a disconnected device
+   * Remove a disconnected device immediately
    */
   public removeDevice(deviceId: string): boolean {
+    const pendingTimer = this.graceTimers.get(deviceId);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      this.graceTimers.delete(deviceId);
+    }
+
     const device = this.devices.get(deviceId);
     if (device) {
       this.devices.delete(deviceId);

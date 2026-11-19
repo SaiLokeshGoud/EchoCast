@@ -6,7 +6,7 @@ import {
 } from '@echocast/shared';
 import { timeSync } from '../sync/timeSync';
 
-export type WsConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+export type WsConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'recovering' | 'disconnected';
 export type MessageHandler<T = any> = (payload: T, message: WsMessage) => void;
 export type StatusChangeHandler = (status: WsConnectionStatus) => void;
 
@@ -19,8 +19,10 @@ export class EchoCastWsClient {
   private maxReconnectDelayMs: number = 8000;
   private reconnectTimer: any = null;
   private syncTimer: any = null;
+  private lastMessageReceivedAt: number = 0;
   private messageHandlers: Map<WsMessageType, Set<MessageHandler>> = new Map();
   private statusHandlers: Set<StatusChangeHandler> = new Set();
+  private isExplicitlyDisconnected: boolean = false;
 
   constructor() {
     this.serverUrl = this.resolveDefaultWsUrl();
@@ -29,11 +31,88 @@ export class EchoCastWsClient {
     } catch {
       // Ignore storage errors in restricted contexts
     }
+
     timeSync.onNeedsCalibration(() => {
       if (this.status === 'connected') {
         this.startInitialSyncBurst();
       }
     });
+
+    this.setupLifecycleListeners();
+  }
+
+  /**
+   * Browser & Mobile OS Lifecycle Event Handlers
+   * Detects Safari sleep, tab switching, and local network changes.
+   */
+  private setupLifecycleListeners() {
+    if (typeof window === 'undefined') return;
+
+    // 1. Network Online / Offline Detection
+    window.addEventListener('online', () => {
+      console.log('[EchoCast WS] Browser reported network online.');
+      if (!this.isExplicitlyDisconnected && this.status !== 'connected') {
+        this.reconnectAttempts = 0;
+        this.connect();
+      } else if (this.status === 'connected') {
+        // Send a probe ping to verify LAN reachability
+        this.sendPing();
+      }
+    });
+
+    window.addEventListener('offline', () => {
+      console.log('[EchoCast WS] Browser reported network offline.');
+      if (!this.isExplicitlyDisconnected) {
+        this.setStatus('disconnected');
+      }
+    });
+
+    // 2. Visibility Change: iOS Safari tab switch or screen unlock
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          console.log('[EchoCast WS] App returned to foreground (visible). Revalidating connection...');
+          this.revalidateConnection();
+        }
+      });
+    }
+
+    // 3. Page Show (bfcache restoration & navigation)
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) {
+        console.log('[EchoCast WS] Page restored from bfcache. Revalidating connection...');
+      }
+      this.revalidateConnection();
+    });
+  }
+
+  /**
+   * Revalidates socket health when browser wakes from sleep or background.
+   */
+  public revalidateConnection() {
+    if (this.isExplicitlyDisconnected) return;
+
+    if (!this.socket || this.socket.readyState === WebSocket.CLOSED || this.socket.readyState === WebSocket.CLOSING) {
+      console.log('[EchoCast WS] Socket is dead/closed upon wake. Reconnecting immediately.');
+      this.reconnectAttempts = 0;
+      this.connect();
+      return;
+    }
+
+    if (this.socket.readyState === WebSocket.OPEN) {
+      // Check if connection has been silent for too long
+      const silentMs = Date.now() - this.lastMessageReceivedAt;
+      if (silentMs > 25000 && this.lastMessageReceivedAt > 0) {
+        console.warn(`[EchoCast WS] Stalled connection detected on wake (${silentMs}ms silent). Restarting socket.`);
+        this.cleanupSocket();
+        this.reconnectAttempts = 0;
+        this.connect();
+        return;
+      }
+
+      // Socket is open, send an immediate ping burst to verify responsiveness
+      this.sendPing();
+    }
   }
 
   private resolveDefaultWsUrl(): string {
@@ -92,6 +171,14 @@ export class EchoCastWsClient {
   }
 
   public connect() {
+    this.isExplicitlyDisconnected = false;
+
+    // Cancel any pending reconnect timer so we don't double-connect
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -102,13 +189,15 @@ export class EchoCastWsClient {
       this.socket = new WebSocket(this.serverUrl);
 
       this.socket.onopen = () => {
-        this.reconnectAttempts = 0;
-        this.setStatus('connected');
+        this.lastMessageReceivedAt = Date.now();
+        // Transition to 'recovering' until server acknowledges room registration
+        this.setStatus(this.reconnectAttempts > 0 ? 'recovering' : 'connecting');
         this.startInitialSyncBurst();
         this.startPeriodicSync();
       };
 
       this.socket.onmessage = (event) => {
+        this.lastMessageReceivedAt = Date.now();
         try {
           const message: WsMessage = JSON.parse(event.data);
           this.handleIncomingMessage(message);
@@ -119,8 +208,12 @@ export class EchoCastWsClient {
 
       this.socket.onclose = () => {
         this.cleanupSocket();
-        this.setStatus('disconnected');
-        this.scheduleReconnect();
+        if (!this.isExplicitlyDisconnected) {
+          this.setStatus('reconnecting');
+          this.scheduleReconnect();
+        } else {
+          this.setStatus('disconnected');
+        }
       };
 
       this.socket.onerror = (err) => {
@@ -128,14 +221,23 @@ export class EchoCastWsClient {
       };
     } catch (e) {
       console.error('Failed to instantiate WebSocket:', e);
-      this.scheduleReconnect();
+      if (!this.isExplicitlyDisconnected) {
+        this.scheduleReconnect();
+      }
     }
   }
 
   public disconnect() {
+    this.isExplicitlyDisconnected = true;
     this.reconnectAttempts = 0;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.syncTimer) clearInterval(this.syncTimer);
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.syncTimer) {
+      clearInterval(this.syncTimer);
+      this.syncTimer = null;
+    }
     this.cleanupSocket();
     this.setStatus('disconnected');
   }
@@ -151,7 +253,9 @@ export class EchoCastWsClient {
       this.socket.onerror = null;
       this.socket.onmessage = null;
       if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) {
-        this.socket.close();
+        try {
+          this.socket.close();
+        } catch {}
       }
       this.socket = null;
     }
@@ -159,11 +263,12 @@ export class EchoCastWsClient {
 
   private scheduleReconnect() {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    // Exponential backoff with random jitter to prevent thundering herd on server restart
+    // Exponential backoff with random jitter to prevent thundering herd
     const baseDelay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), this.maxReconnectDelayMs);
-    const jitter = Math.random() * 600;
+    const jitter = Math.random() * 500;
     const delay = Math.round(baseDelay + jitter);
     this.reconnectAttempts++;
+
     this.reconnectTimer = setTimeout(() => {
       this.connect();
     }, delay);
@@ -172,10 +277,13 @@ export class EchoCastWsClient {
   private handleIncomingMessage(message: WsMessage) {
     if (message.type === 'DEVICE_REGISTERED') {
       this.deviceId = message.payload.id;
+      this.reconnectAttempts = 0;
+      // Connection and room membership confirmed by server
+      this.setStatus('connected');
       try {
         localStorage.setItem('echocast_device_id', message.payload.id);
       } catch {
-        // Ignore
+        // Ignore storage errors in private browsing / sandboxes
       }
     }
 
@@ -222,7 +330,7 @@ export class EchoCastWsClient {
     let count = 0;
     const maxBurst = 10;
     const interval = setInterval(() => {
-      if (this.status !== 'connected' || count >= maxBurst) {
+      if (!this.socket || this.socket.readyState !== WebSocket.OPEN || count >= maxBurst) {
         clearInterval(interval);
         return;
       }
@@ -232,12 +340,21 @@ export class EchoCastWsClient {
   }
 
   /**
-   * Maintain periodic clock synchronization to account for oscillator drift
+   * Maintain periodic clock synchronization and detect zombie / stalled connections
    */
   private startPeriodicSync() {
     if (this.syncTimer) clearInterval(this.syncTimer);
     this.syncTimer = setInterval(() => {
-      if (this.status === 'connected') {
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        const timeSinceLastMessage = Date.now() - this.lastMessageReceivedAt;
+        // If connection has been silent for > 25 seconds while open, socket is likely stalled
+        if (timeSinceLastMessage > 25000 && this.lastMessageReceivedAt > 0) {
+          console.warn(`[EchoCast WS] Stalled socket detected (${timeSinceLastMessage}ms silent). Recovering connection.`);
+          this.cleanupSocket();
+          this.scheduleReconnect();
+          return;
+        }
+
         this.sendPing();
       }
     }, 4500);
