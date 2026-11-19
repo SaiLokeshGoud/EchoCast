@@ -1,4 +1,4 @@
-import { SyncPingPayload, SyncPongPayload } from '@echocast/shared';
+import { SyncPingPayload, SyncPongPayload, BroadcastState } from '@echocast/shared';
 import { logger } from '../utils/logger';
 
 const syncLogger = logger.forContext('SyncEngine');
@@ -27,7 +27,6 @@ export class SyncEngineService {
    */
   public processPing(payload: SyncPingPayload): SyncPongPayload {
     const serverReceiveTime = this.getServerTime();
-    // Simulate instantaneous or tiny compute delta for serverSendTime
     const serverSendTime = this.getServerTime();
 
     return {
@@ -42,6 +41,34 @@ export class SyncEngineService {
    */
   public calculateScheduledTime(delayMs: number = 650): number {
     return this.getServerTime() + delayMs;
+  }
+
+  /**
+   * Calculate expected playback position in seconds at a given server timestamp
+   */
+  public getExpectedPlaybackPosition(broadcastState: BroadcastState, targetServerTime?: number): number {
+    if (!broadcastState.isPlaying || !broadcastState.currentTrack) {
+      return broadcastState.positionSec;
+    }
+    const now = targetServerTime !== undefined ? targetServerTime : this.getServerTime();
+    const elapsedSec = Math.max(0, (now - broadcastState.referenceServerTime) / 1000);
+    let pos = broadcastState.positionSec + elapsedSec;
+
+    if (broadcastState.currentTrack.durationSec > 0) {
+      if (broadcastState.loop) {
+        pos = pos % broadcastState.currentTrack.durationSec;
+      } else {
+        pos = Math.min(pos, broadcastState.currentTrack.durationSec);
+      }
+    }
+    return pos;
+  }
+
+  /**
+   * Calculate synchronization error in milliseconds (positive = receiver leading, negative = receiver lagging)
+   */
+  public calculateSyncDeviationMs(reportedPosSec: number, expectedPosSec: number): number {
+    return (reportedPosSec - expectedPosSec) * 1000;
   }
 }
 

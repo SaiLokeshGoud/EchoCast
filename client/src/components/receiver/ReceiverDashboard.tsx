@@ -56,6 +56,8 @@ interface Props {
   outputType: DeviceAudioOutput;
   manualOffsetMs: number;
   syncMetrics: SyncMetrics;
+  syncErrorMs?: number;
+  driftCorrectionInfo?: { active: boolean; rate: number };
   lastErrorMessage?: string | null;
   onClearError?: () => void;
   isAudioUnlocked: boolean;
@@ -90,6 +92,8 @@ export const ReceiverDashboard: React.FC<Props> = ({
   outputType,
   manualOffsetMs,
   syncMetrics,
+  syncErrorMs,
+  driftCorrectionInfo,
   lastErrorMessage,
   onClearError,
   isAudioUnlocked,
@@ -495,7 +499,39 @@ export const ReceiverDashboard: React.FC<Props> = ({
       )}
 
       {/* Precision Synchronization Quality Badge */}
-      <SyncMetricsBadge metrics={syncMetrics} />
+      <SyncMetricsBadge metrics={syncMetrics} syncErrorMs={syncErrorMs} />
+
+      {/* Active Phase Drift Correction Banner */}
+      {isPlaying && driftCorrectionInfo?.active && (
+        <div className="p-3.5 rounded-xl bg-cyanAccent-500/10 border border-cyanAccent-500/30 text-cyanAccent-300 flex items-center justify-between text-xs animate-in fade-in duration-150">
+          <div className="flex items-center gap-2">
+            <Zap className="w-4 h-4 text-cyanAccent-400 animate-pulse shrink-0" />
+            <span>
+              <strong>Acoustic Drift Correction Active:</strong> Micro-nudging playback rate to{' '}
+              <span className="font-mono font-bold text-white bg-charcoal-850 px-1.5 py-0.5 rounded border border-cyanAccent-500/40">
+                {driftCorrectionInfo.rate.toFixed(3)}x
+              </span>{' '}
+              to eliminate phase deviation without audio artifacts.
+            </span>
+          </div>
+          <span className="font-mono font-bold text-cyanAccent-400 shrink-0 ml-2">
+            {syncErrorMs !== undefined ? `${syncErrorMs > 0 ? '+' : ''}${syncErrorMs}ms` : ''}
+          </span>
+        </div>
+      )}
+
+      {/* Bluetooth Latency Advisory */}
+      {outputType === 'bluetooth' && (
+        <div className="p-3.5 rounded-xl bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 flex items-center justify-between text-xs">
+          <div className="flex items-center gap-2.5">
+            <Headphones className="w-4 h-4 text-indigo-400 shrink-0" />
+            <span>
+              <strong>Bluetooth Output Active:</strong> Wireless A2DP hardware buffers introduce 120–220ms latency.
+              EchoCast has applied a <strong>+{manualOffsetMs}ms</strong> compensation preset. Fine-tune with the slider below if needed.
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Synchronized Playback Display & Album Artwork */}
       <div className="bg-charcoal-900 border border-charcoal-750 rounded-2xl p-6 shadow-xl space-y-6">

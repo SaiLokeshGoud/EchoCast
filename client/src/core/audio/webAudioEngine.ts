@@ -34,6 +34,12 @@ export class WebAudioEngine {
   private currentGeneration: number = 0;
   private playbackStartTimeSec: number = 0; // audioContext time when playback began
   private trackOffsetSec: number = 0;       // track position when started
+  private scheduledServerStartTime: number = 0;
+  private scheduledStartPositionSec: number = 0;
+  private currentSyncErrorMs: number = 0;
+  private isDriftCorrectionActive: boolean = false;
+  private driftCorrectionRate: number = 1.0;
+  private driftMonitorTimer: any = null;
   private listeners: Set<AudioEngineListener> = new Set();
   private endedListeners: Set<() => void> = new Set();
 
@@ -626,6 +632,7 @@ export class WebAudioEngine {
 
     source.onended = () => {
       if (this.currentSourceNode === source) {
+        this.stopDriftMonitor();
         this.currentSourceNode = null;
         this.state = 'ready';
         this.updateMediaSession(this.currentTrack, false);
@@ -644,11 +651,117 @@ export class WebAudioEngine {
     this.currentSourceNode = source;
     this.playbackStartTimeSec = targetAudioContextTime;
     this.trackOffsetSec = safeOffset;
+    this.scheduledServerStartTime = scheduledServerTime;
+    this.scheduledStartPositionSec = startPositionSec;
     this.state = 'playing';
 
+    this.startDriftMonitor();
     this.requestWakeLock();
     this.updateMediaSession(this.currentTrack, true);
     this.notify();
+  }
+
+  /**
+   * Start active drift monitoring loop during synchronized playback
+   */
+  private startDriftMonitor() {
+    if (this.driftMonitorTimer) clearInterval(this.driftMonitorTimer);
+    this.driftMonitorTimer = setInterval(() => {
+      this.evaluateAndCorrectDrift();
+    }, 1200);
+  }
+
+  private stopDriftMonitor() {
+    if (this.driftMonitorTimer) {
+      clearInterval(this.driftMonitorTimer);
+      this.driftMonitorTimer = null;
+    }
+    if (this.isDriftCorrectionActive && this.currentSourceNode && this.ctx) {
+      try {
+        this.currentSourceNode.playbackRate.setValueAtTime(1.0, this.ctx.currentTime);
+      } catch {}
+    }
+    this.isDriftCorrectionActive = false;
+    this.driftCorrectionRate = 1.0;
+  }
+
+  /**
+   * Active drift evaluation and acoustic alignment correction:
+   * - <= 20ms: deadband (in-phase lock, 1.0x rate)
+   * - 20ms to 120ms: pitch-neutral soft rate nudge (1.015x or 0.985x)
+   * - 120ms to 300ms: moderate rate nudge (1.03x or 0.97x)
+   * - > 300ms: hard resynchronization catch-up
+   */
+  public evaluateAndCorrectDrift() {
+    if (this.state !== 'playing' || !this.currentSourceNode || !this.ctx || !this.activeBuffer) {
+      return;
+    }
+
+    const currentServerTime = timeSync.getServerTime();
+    const currentPos = this.getCurrentPosition();
+
+    // Calculate where this track SHOULD be right now according to the synchronized server clock:
+    let expectedPos = this.scheduledStartPositionSec;
+    if (this.scheduledServerStartTime > 0) {
+      const elapsedSec = (currentServerTime - this.scheduledServerStartTime) / 1000;
+      expectedPos = this.scheduledStartPositionSec + Math.max(0, elapsedSec);
+    }
+
+    if (expectedPos >= this.activeBuffer.duration) {
+      return;
+    }
+
+    // Drift: positive = receiver is leading (ahead of host), negative = receiver is lagging (behind host)
+    const driftSec = currentPos - expectedPos;
+    const driftMs = driftSec * 1000;
+    this.currentSyncErrorMs = Math.round(driftMs);
+    const absDriftMs = Math.abs(driftMs);
+
+    // 1. Deadband protection: <= 20ms deviation is considered in-phase lock
+    if (absDriftMs <= 20) {
+      if (this.isDriftCorrectionActive) {
+        this.currentSourceNode.playbackRate.setValueAtTime(1.0, this.ctx.currentTime);
+        this.isDriftCorrectionActive = false;
+        this.driftCorrectionRate = 1.0;
+        this.notify();
+      }
+      return;
+    }
+
+    // 2. Minor drift: 20ms to 120ms (smooth ±1.5% pitch-neutral rate nudge)
+    if (absDriftMs <= 120) {
+      const targetRate = driftMs < 0 ? 1.015 : 0.985;
+      this.currentSourceNode.playbackRate.setValueAtTime(targetRate, this.ctx.currentTime);
+      this.isDriftCorrectionActive = true;
+      this.driftCorrectionRate = targetRate;
+      this.notify();
+      return;
+    }
+
+    // 3. Moderate drift: 120ms to 300ms (±3.0% rate nudge)
+    if (absDriftMs <= 300) {
+      const targetRate = driftMs < 0 ? 1.03 : 0.97;
+      this.currentSourceNode.playbackRate.setValueAtTime(targetRate, this.ctx.currentTime);
+      this.isDriftCorrectionActive = true;
+      this.driftCorrectionRate = targetRate;
+      this.notify();
+      return;
+    }
+
+    // 4. Severe drift: > 300ms (e.g. mobile tab suspended or prolonged Wi-Fi dropout)
+    // Perform hard resynchronization to snap back into lockstep
+    this.schedulePlay(this.scheduledServerStartTime, this.scheduledStartPositionSec, this.currentGeneration);
+  }
+
+  public getCurrentSyncErrorMs(): number {
+    return this.currentSyncErrorMs;
+  }
+
+  public getDriftCorrectionInfo(): { active: boolean; rate: number } {
+    return {
+      active: this.isDriftCorrectionActive,
+      rate: this.driftCorrectionRate,
+    };
   }
 
   /**
@@ -682,6 +795,7 @@ export class WebAudioEngine {
   }
 
   private stopActiveSource() {
+    this.stopDriftMonitor();
     if (this.currentSourceNode) {
       try {
         this.currentSourceNode.stop();

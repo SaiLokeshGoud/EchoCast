@@ -38,3 +38,14 @@ export interface ScheduledPlaybackEvent {
   positionSec: number;         // Track position in seconds at the scheduled time
   generation: number;          // Unique generation number to cancel stale events
 }
+
+export interface SyncHealthMetrics {
+  roundTripTimeMs: number;
+  clockOffsetMs: number;
+  jitterMs: number;
+  syncErrorMs: number;
+  driftCorrectionActive: boolean;
+  driftCorrectionRate: number; // e.g. 1.015 (+1.5%), 0.985 (-1.5%), 1.0 (neutral)
+  quality: SyncQuality;
+  networkCondition: 'optimal' | 'stable' | 'jittery' | 'congested';
+}

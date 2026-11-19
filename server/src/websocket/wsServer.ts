@@ -252,7 +252,18 @@ export class EchoCastWsServer {
 
       case 'DEVICE_STATE_UPDATE': {
         if (ws.deviceId) {
-          deviceManager.updateDeviceState(ws.deviceId, message.payload);
+          const updates = { ...message.payload };
+          const broadcastState = audioStreamService.getBroadcastState();
+          if (
+            broadcastState.isPlaying &&
+            broadcastState.currentTrack &&
+            typeof updates.playbackPositionSec === 'number'
+          ) {
+            const expectedPos = syncEngine.getExpectedPlaybackPosition(broadcastState);
+            const deviationMs = syncEngine.calculateSyncDeviationMs(updates.playbackPositionSec, expectedPos);
+            updates.syncErrorMs = Math.round(deviationMs);
+          }
+          deviceManager.updateDeviceState(ws.deviceId, updates);
         }
         break;
       }

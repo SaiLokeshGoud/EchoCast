@@ -2,6 +2,8 @@
  * Device metadata and state representations
  */
 
+import { SyncQuality } from './sync';
+
 export type DeviceRole = 'sender' | 'receiver';
 
 export type DevicePlatform = 'android' | 'ios' | 'windows' | 'macos' | 'linux' | 'other';
@@ -27,7 +29,14 @@ export interface DeviceInfo {
   status: DeviceStatus;
   roundTripTimeMs: number;
   clockOffsetMs: number;
+  jitterMs?: number;
   manualAdjustmentMs: number;
+  effectiveLatencyMs?: number;
+  syncErrorMs?: number;          // Live measured playback deviation vs host in ms (negative = lagging, positive = leading)
+  playbackPositionSec?: number;  // Current playback timestamp in seconds
+  bufferHealth?: 'good' | 'buffering' | 'underrun';
+  bufferProgress?: number;       // 0 to 100
+  syncQuality?: SyncQuality;
   volume: number; // 0.0 to 1.0
   isMuted: boolean;
   batteryPercent?: number;
@@ -55,7 +64,14 @@ export interface DeviceStateUpdatePayload {
   outputType?: DeviceAudioOutput;
   roundTripTimeMs?: number;
   clockOffsetMs?: number;
+  jitterMs?: number;
   manualAdjustmentMs?: number;
+  effectiveLatencyMs?: number;
+  syncErrorMs?: number;
+  playbackPositionSec?: number;
+  bufferHealth?: 'good' | 'buffering' | 'underrun';
+  bufferProgress?: number;
+  syncQuality?: SyncQuality;
   volume?: number;
   isMuted?: boolean;
   batteryPercent?: number;

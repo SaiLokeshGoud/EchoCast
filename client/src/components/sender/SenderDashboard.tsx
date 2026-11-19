@@ -28,6 +28,7 @@ import {
   Repeat,
   Sparkles,
   AlertTriangle,
+  Activity,
   Power,
   RefreshCw,
   FolderPlus,
@@ -137,6 +138,12 @@ export const SenderDashboard: React.FC<Props> = ({
       setIsEditingRoom(false);
     }
   };
+
+  // Derive sync deviation stats across active receivers
+  const activeReceiversWithSync = receivers.filter((r) => typeof r.syncErrorMs === 'number');
+  const maxDevMs = activeReceiversWithSync.length > 0
+    ? Math.max(...activeReceiversWithSync.map((r) => Math.abs(r.syncErrorMs!)))
+    : null;
 
   // Supported audio extensions & validation
   const validateAndUploadFiles = async (files: FileList | File[]) => {
@@ -349,6 +356,27 @@ export const SenderDashboard: React.FC<Props> = ({
               <span className="text-slate-400">Receivers:</span>
               <span className="text-white font-bold">{receivers.length}</span>
             </div>
+
+            {/* Live Sync Deviation Indicator */}
+            {maxDevMs !== null && (
+              <div
+                onClick={onNavigateToDevices}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-mono font-medium cursor-pointer transition ${
+                  maxDevMs <= 20
+                    ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300'
+                    : maxDevMs <= 50
+                    ? 'bg-cyan-950/40 border-cyan-800/60 text-cyan-300'
+                    : maxDevMs <= 150
+                    ? 'bg-amber-950/40 border-amber-800/60 text-amber-300'
+                    : 'bg-rose-950/40 border-rose-800/60 text-rose-300'
+                }`}
+                title={`Max sync deviation across all receivers: ±${maxDevMs}ms (Click to view)`}
+              >
+                <Activity className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Max Dev:</span>
+                <span className="font-bold">±{maxDevMs}ms</span>
+              </div>
+            )}
 
             <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-charcoal-850 border border-charcoal-750 text-xs font-mono text-slate-400">
               <Wifi className="w-3.5 h-3.5 text-slate-400" />

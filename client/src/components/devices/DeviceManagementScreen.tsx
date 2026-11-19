@@ -3,6 +3,7 @@ import {
   DeviceInfo,
   formatTimeMs,
   evaluateSyncQuality,
+  evaluateSyncHealthTag,
 } from '@echocast/shared';
 import {
   Users,
@@ -38,6 +39,14 @@ export const DeviceManagementScreen: React.FC<Props> = ({
   const avgRtt = receivers.length
     ? receivers.reduce((sum, d) => sum + d.roundTripTimeMs, 0) / receivers.length
     : 0;
+
+  const receiversWithSync = receivers.filter((d) => d.syncErrorMs !== undefined);
+  const avgSyncError = receiversWithSync.length
+    ? Math.round(
+        receiversWithSync.reduce((sum, d) => sum + Math.abs(d.syncErrorMs || 0), 0) /
+          receiversWithSync.length
+      )
+    : undefined;
 
   const getPlatformIcon = (platform: string) => {
     switch (platform) {
@@ -77,7 +86,7 @@ export const DeviceManagementScreen: React.FC<Props> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="bg-charcoal-900 border border-charcoal-750 rounded-xl px-3.5 py-2 text-xs font-mono">
             <span className="text-slate-400">Total Receivers: </span>
             <span className="text-brand-400 font-bold">{receivers.length}</span>
@@ -86,6 +95,14 @@ export const DeviceManagementScreen: React.FC<Props> = ({
             <span className="text-slate-400">Avg RTT: </span>
             <span className="text-cyanAccent-400 font-bold">{formatTimeMs(avgRtt)}</span>
           </div>
+          {avgSyncError !== undefined && (
+            <div className="bg-charcoal-900 border border-charcoal-750 rounded-xl px-3.5 py-2 text-xs font-mono">
+              <span className="text-slate-400">Avg Sync Error: </span>
+              <span className={avgSyncError <= 20 ? 'text-emerald-400 font-bold' : avgSyncError <= 50 ? 'text-teal-400 font-bold' : 'text-amber-400 font-bold'}>
+                ±{avgSyncError}ms
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -172,7 +189,6 @@ export const DeviceManagementScreen: React.FC<Props> = ({
               const PlatformIcon = getPlatformIcon(device.platform);
               const statusBadge = getStatusBadge(device.status);
               const syncQuality = evaluateSyncQuality(device.clockOffsetMs, device.roundTripTimeMs);
-              const isExcellent = syncQuality === 'excellent';
 
               return (
                 <div
@@ -206,6 +222,17 @@ export const DeviceManagementScreen: React.FC<Props> = ({
                       <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${statusBadge.color}`}>
                         {statusBadge.label}
                       </span>
+                      {device.syncErrorMs !== undefined ? (
+                        <span className={`text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border ${
+                          evaluateSyncHealthTag(device.syncErrorMs).color
+                        }`}>
+                          {evaluateSyncHealthTag(device.syncErrorMs).label}
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border border-charcoal-700 text-slate-400 capitalize">
+                          {syncQuality}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -216,8 +243,31 @@ export const DeviceManagementScreen: React.FC<Props> = ({
                       <span className="text-slate-200 font-bold">{formatTimeMs(device.clockOffsetMs)}</span>
                     </div>
                     <div>
-                      <span className="text-[10px] text-slate-500 uppercase block">RTT Latency</span>
-                      <span className="text-slate-200 font-bold">{formatTimeMs(device.roundTripTimeMs)}</span>
+                      <span className="text-[10px] text-slate-500 uppercase block">RTT / Jitter</span>
+                      <span className="text-slate-200 font-bold">
+                        {formatTimeMs(device.roundTripTimeMs)}
+                        <span className="text-[10px] text-slate-500 font-normal"> ±{formatTimeMs(device.jitterMs || 0)}</span>
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-500 uppercase block">Sync Deviation</span>
+                      <span className={`font-bold ${
+                        device.syncErrorMs === undefined
+                          ? 'text-slate-400'
+                          : Math.abs(device.syncErrorMs) <= 20
+                          ? 'text-emerald-400'
+                          : Math.abs(device.syncErrorMs) <= 50
+                          ? 'text-teal-400'
+                          : 'text-amber-400'
+                      }`}>
+                        {device.syncErrorMs !== undefined ? `${device.syncErrorMs > 0 ? '+' : ''}${device.syncErrorMs}ms` : 'Syncing'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-500 uppercase block">Buffer Cache</span>
+                      <span className="text-slate-200 font-bold">
+                        {device.bufferProgress !== undefined ? `${device.bufferProgress}%` : device.audioBufferReady ? '100%' : 'Ready'}
+                      </span>
                     </div>
                   </div>
 
@@ -254,10 +304,12 @@ export const DeviceManagementScreen: React.FC<Props> = ({
                     </div>
                   </div>
 
-                  {/* Disconnect Action */}
+                  {/* Disconnect Action & Health Tag */}
                   <div className="pt-2 border-t border-charcoal-750/60 flex items-center justify-between">
-                    <span className="text-[11px] text-slate-500 font-mono">
-                      Quality: <span className={isExcellent ? 'text-emerald-400' : 'text-amber-400'}>{syncQuality}</span>
+                    <span className="text-[11px] font-mono flex items-center gap-1.5">
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${evaluateSyncHealthTag(device.syncErrorMs).badgeClass}`}>
+                        {evaluateSyncHealthTag(device.syncErrorMs).label}
+                      </span>
                     </span>
 
                     <button

@@ -24,6 +24,11 @@ export class EchoCastWsClient {
 
   constructor() {
     this.serverUrl = this.resolveDefaultWsUrl();
+    timeSync.onNeedsCalibration(() => {
+      if (this.status === 'connected') {
+        this.startInitialSyncBurst();
+      }
+    });
   }
 
   private resolveDefaultWsUrl(): string {

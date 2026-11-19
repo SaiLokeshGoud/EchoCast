@@ -26,12 +26,63 @@ export function formatAudioTime(seconds: number): string {
 /**
  * Helper to determine sync quality classification
  */
-export function evaluateSyncQuality(offsetMs: number, rttMs: number): 'excellent' | 'good' | 'fair' | 'poor' {
+export function evaluateSyncQuality(offsetMs: number, rttMs: number, jitterMs: number = 0): 'excellent' | 'good' | 'fair' | 'poor' {
   const absOffset = Math.abs(offsetMs);
-  if (absOffset <= 5 && rttMs <= 25) return 'excellent';
-  if (absOffset <= 15 && rttMs <= 60) return 'good';
-  if (absOffset <= 35 && rttMs <= 120) return 'fair';
+  if (absOffset <= 5 && rttMs <= 25 && jitterMs <= 4) return 'excellent';
+  if (absOffset <= 15 && rttMs <= 60 && jitterMs <= 10) return 'good';
+  if (absOffset <= 35 && rttMs <= 120 && jitterMs <= 25) return 'fair';
   return 'poor';
+}
+
+/**
+ * Return user-facing acoustic sync health label and tag
+ */
+export function evaluateSyncHealthTag(syncErrorMs?: number): {
+  label: string;
+  color: string;
+  badgeClass: string;
+  description: string;
+} {
+  if (syncErrorMs === undefined) {
+    return {
+      label: 'Standby',
+      color: 'text-slate-400',
+      badgeClass: 'bg-slate-800 text-slate-400 border-slate-700',
+      description: 'Waiting for playback broadcast',
+    };
+  }
+
+  const absError = Math.abs(syncErrorMs);
+  if (absError <= 20) {
+    return {
+      label: 'Phase Locked (≤20ms)',
+      color: 'text-emerald-400',
+      badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+      description: 'Imperceptible phase alignment; identical acoustics across devices.',
+    };
+  }
+  if (absError <= 50) {
+    return {
+      label: 'Tight Sync (≤50ms)',
+      color: 'text-teal-400',
+      badgeClass: 'bg-teal-500/10 text-teal-400 border-teal-500/30',
+      description: 'High-quality synchronized playback within multi-room targets.',
+    };
+  }
+  if (absError <= 150) {
+    return {
+      label: 'Audible Sync (≤150ms)',
+      color: 'text-amber-400',
+      badgeClass: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+      description: 'Acceptable sync; rate nudge actively narrowing phase offset.',
+    };
+  }
+  return {
+    label: `Drift (>150ms: ${Math.round(syncErrorMs)}ms)`,
+    color: 'text-rose-400',
+    badgeClass: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
+    description: 'Noticeable acoustic lag; hard catch-up active.',
+  };
 }
 
 /**

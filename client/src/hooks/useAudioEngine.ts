@@ -16,6 +16,10 @@ export function useAudioEngine() {
   const [cacheCount, setCacheCount] = useState<number>(webAudioEngine.getCacheCount());
   const [maxCacheEntries, setMaxCacheEntriesState] = useState<number>(webAudioEngine.getMaxCacheEntries());
   const [lastErrorMessage, setLastErrorMessage] = useState<string | null>(webAudioEngine.getLastErrorMessage());
+  const [syncErrorMs, setSyncErrorMs] = useState<number>(webAudioEngine.getCurrentSyncErrorMs());
+  const [driftCorrectionInfo, setDriftCorrectionInfo] = useState<{ active: boolean; rate: number }>(
+    webAudioEngine.getDriftCorrectionInfo()
+  );
 
   useEffect(() => {
     const unsubscribe = webAudioEngine.subscribe(() => {
@@ -31,11 +35,15 @@ export function useAudioEngine() {
       setCacheCount(webAudioEngine.getCacheCount());
       setMaxCacheEntriesState(webAudioEngine.getMaxCacheEntries());
       setLastErrorMessage(webAudioEngine.getLastErrorMessage());
+      setSyncErrorMs(webAudioEngine.getCurrentSyncErrorMs());
+      setDriftCorrectionInfo(webAudioEngine.getDriftCorrectionInfo());
     });
 
     // Position update interval when playing
     const posTimer = setInterval(() => {
       setPositionSec(webAudioEngine.getCurrentPosition());
+      setSyncErrorMs(webAudioEngine.getCurrentSyncErrorMs());
+      setDriftCorrectionInfo(webAudioEngine.getDriftCorrectionInfo());
     }, 100);
 
     return () => {
@@ -89,6 +97,8 @@ export function useAudioEngine() {
     cacheCount,
     maxCacheEntries,
     lastErrorMessage,
+    syncErrorMs,
+    driftCorrectionInfo,
     isUnlocked,
     unlockAudio,
     setVolume,

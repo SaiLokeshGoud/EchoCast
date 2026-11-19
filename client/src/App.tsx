@@ -122,6 +122,8 @@ export function App() {
     cacheCount,
     maxCacheEntries,
     lastErrorMessage,
+    syncErrorMs,
+    driftCorrectionInfo,
     isUnlocked,
     unlockAudio,
     setVolume,
@@ -306,25 +308,46 @@ export function App() {
     };
   }, [deviceName, role, platform, outputType, roomId, authToken, fetchTracks, webAudioEngine, setVolume, setMuted]);
 
-  // Periodic heartbeat reporting local metrics to server
+  // Periodic heartbeat reporting local telemetry, playback position, and sync error to server
   useEffect(() => {
     if (connectionStatus !== 'connected') return;
 
     const interval = setInterval(() => {
       wsClient.updateDeviceState({
+        status: engineState === 'playing' ? 'playing' : engineState === 'buffering' ? 'buffering' : 'ready',
         roundTripTimeMs: syncMetrics.roundTripTimeMs,
         clockOffsetMs: syncMetrics.clockOffsetMs,
+        jitterMs: syncMetrics.jitterMs,
         manualAdjustmentMs: manualOffsetMs,
+        effectiveLatencyMs: syncMetrics.effectiveTotalLatencyMs,
+        syncErrorMs: webAudioEngine.getCurrentSyncErrorMs(),
+        playbackPositionSec: positionSec,
+        bufferHealth: engineState === 'buffering' ? 'buffering' : bufferProgress < 100 ? 'buffering' : 'good',
+        bufferProgress,
+        syncQuality: syncMetrics.quality,
         volume,
         isMuted,
         outputType,
         audioBufferReady: engineState === 'ready' || engineState === 'playing',
         roomId,
       });
-    }, 4000);
+    }, isPlaying ? 1500 : 3500);
 
     return () => clearInterval(interval);
-  }, [connectionStatus, syncMetrics, manualOffsetMs, volume, isMuted, outputType, engineState, roomId]);
+  }, [
+    connectionStatus,
+    syncMetrics,
+    manualOffsetMs,
+    volume,
+    isMuted,
+    outputType,
+    engineState,
+    bufferProgress,
+    positionSec,
+    isPlaying,
+    roomId,
+    webAudioEngine,
+  ]);
 
   // Screen navigation handler
   const handleNavigate = (screen: AppScreen) => {
@@ -655,6 +678,8 @@ export function App() {
             outputType={outputType}
             manualOffsetMs={manualOffsetMs}
             syncMetrics={syncMetrics}
+            syncErrorMs={syncErrorMs}
+            driftCorrectionInfo={driftCorrectionInfo}
             lastErrorMessage={lastErrorMessage}
             onClearError={clearError}
             isAudioUnlocked={isUnlocked}

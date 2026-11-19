@@ -82,7 +82,14 @@ export class DeviceManagerService {
     if (updates.outputType !== undefined) device.outputType = updates.outputType;
     if (updates.roundTripTimeMs !== undefined) device.roundTripTimeMs = updates.roundTripTimeMs;
     if (updates.clockOffsetMs !== undefined) device.clockOffsetMs = updates.clockOffsetMs;
+    if (updates.jitterMs !== undefined) device.jitterMs = updates.jitterMs;
     if (updates.manualAdjustmentMs !== undefined) device.manualAdjustmentMs = updates.manualAdjustmentMs;
+    if (updates.effectiveLatencyMs !== undefined) device.effectiveLatencyMs = updates.effectiveLatencyMs;
+    if (updates.syncErrorMs !== undefined) device.syncErrorMs = updates.syncErrorMs;
+    if (updates.playbackPositionSec !== undefined) device.playbackPositionSec = updates.playbackPositionSec;
+    if (updates.bufferHealth !== undefined) device.bufferHealth = updates.bufferHealth;
+    if (updates.bufferProgress !== undefined) device.bufferProgress = updates.bufferProgress;
+    if (updates.syncQuality !== undefined) device.syncQuality = updates.syncQuality;
     if (updates.volume !== undefined) device.volume = updates.volume;
     if (updates.isMuted !== undefined) device.isMuted = updates.isMuted;
     if (updates.batteryPercent !== undefined) device.batteryPercent = updates.batteryPercent;
