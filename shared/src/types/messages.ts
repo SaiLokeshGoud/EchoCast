@@ -1,5 +1,6 @@
 import { DeviceInfo, DeviceRegistrationPayload, DeviceStateUpdatePayload } from './devices';
 import { SyncPingPayload, SyncPongPayload } from './sync';
+import { NetworkInterfaceInfo } from './network';
 import {
   AudioTrackMetadata,
   BroadcastState,
@@ -17,6 +18,10 @@ export type WsMessageType =
   | 'DEVICE_STATE_UPDATE'
   | 'DEVICE_DISCONNECTED'
   | 'RECEIVER_LEAVE_ROOM'
+
+  // Network & Environment
+  | 'NETWORK_STATUS_UPDATE'
+  | 'ROOM_AUTH_UPDATE'
 
   // Time Synchronization (NTP protocol)
   | 'SYNC_PING'
@@ -81,4 +86,6 @@ export type WsMessage =
   | { type: 'REMOTE_SET_RECEIVER_VOLUME'; payload: { targetDeviceId: string; volume: number }; timestamp: number; senderId?: string }
   | { type: 'REMOTE_MUTE_RECEIVER'; payload: { targetDeviceId: string; isMuted: boolean }; timestamp: number; senderId?: string }
   | { type: 'REMOTE_DISCONNECT_RECEIVER'; payload: { targetDeviceId: string; reason?: string }; timestamp: number; senderId?: string }
+  | { type: 'NETWORK_STATUS_UPDATE'; payload: { primaryUrl: string; activeInterfaces: NetworkInterfaceInfo[]; isHotspotDetected: boolean }; timestamp: number; senderId?: string }
+  | { type: 'ROOM_AUTH_UPDATE'; payload: { authToken: string; requireAuth: boolean }; timestamp: number; senderId?: string }
   | { type: 'ERROR'; payload: { code: string; message: string; details?: unknown }; timestamp: number; senderId?: string };

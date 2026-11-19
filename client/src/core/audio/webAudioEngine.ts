@@ -1,8 +1,14 @@
-import { AudioTrackMetadata, DeviceAudioOutput } from '@echocast/shared';
+import { AudioTrackMetadata, DeviceAudioOutput, AudioFormat, AUDIO_MIME_TYPES } from '@echocast/shared';
 import { timeSync } from '../sync/timeSync';
 
 export type AudioEngineState = 'unlocked' | 'locked' | 'buffering' | 'ready' | 'playing' | 'paused' | 'error';
 export type AudioEngineListener = () => void;
+
+export interface AudioBufferCacheEntry {
+  buffer: AudioBuffer;
+  lastAccessed: number;
+  sizeBytes: number;
+}
 
 export class WebAudioEngine {
   private ctx: AudioContext | null = null;
@@ -11,8 +17,13 @@ export class WebAudioEngine {
   private currentSourceNode: AudioBufferSourceNode | null = null;
 
   private currentTrack: AudioTrackMetadata | null = null;
-  private audioBufferCache: Map<string, AudioBuffer> = new Map();
+  // LRU cache for decoded AudioBuffers: prevents mobile browser memory exhaustion
+  private audioBufferCache: Map<string, AudioBufferCacheEntry> = new Map();
+  private maxCacheEntries: number = 3;
   private activeBuffer: AudioBuffer | null = null;
+  private lastErrorMessage: string | null = null;
+  private currentAbortController: AbortController | null = null;
+  private scheduleDelayMs: number = 650;
 
   private state: AudioEngineState = 'locked';
   private bufferProgress: number = 0;
@@ -234,6 +245,125 @@ export class WebAudioEngine {
     return this.audioBufferCache.size;
   }
 
+  public getMaxCacheEntries(): number {
+    return this.maxCacheEntries;
+  }
+
+  public setMaxCacheEntries(max: number): void {
+    this.maxCacheEntries = Math.max(1, max);
+    this.pruneCache();
+    this.notify();
+  }
+
+  public clearCache(): void {
+    this.audioBufferCache.clear();
+    this.notify();
+  }
+
+  public getLastErrorMessage(): string | null {
+    return this.lastErrorMessage;
+  }
+
+  public clearError(): void {
+    this.lastErrorMessage = null;
+    if (this.state === 'error') {
+      this.state = this.isUnlocked() ? (this.activeBuffer ? 'ready' : 'unlocked') : 'locked';
+    }
+    this.notify();
+  }
+
+  public getScheduleDelayMs(): number {
+    return this.scheduleDelayMs;
+  }
+
+  public setScheduleDelayMs(ms: number): void {
+    this.scheduleDelayMs = Math.max(100, Math.min(3000, ms));
+  }
+
+  private pruneCache() {
+    while (this.audioBufferCache.size > this.maxCacheEntries) {
+      let oldestKey: string | null = null;
+      let oldestTime = Infinity;
+      for (const [key, entry] of this.audioBufferCache.entries()) {
+        if (entry.lastAccessed < oldestTime) {
+          oldestTime = entry.lastAccessed;
+          oldestKey = key;
+        }
+      }
+      if (oldestKey) {
+        this.audioBufferCache.delete(oldestKey);
+      } else {
+        break;
+      }
+    }
+  }
+
+  private addToCache(trackId: string, buffer: AudioBuffer) {
+    const sizeBytes = buffer.length * buffer.numberOfChannels * 4;
+    this.audioBufferCache.set(trackId, {
+      buffer,
+      lastAccessed: Date.now(),
+      sizeBytes,
+    });
+    this.pruneCache();
+  }
+
+  /**
+   * Browser Codec Support Detection
+   */
+  public static checkCodecSupport(format: AudioFormat): { supported: boolean; reason?: string } {
+    if (typeof Audio === 'undefined') return { supported: true };
+    const audio = new Audio();
+    const mime = AUDIO_MIME_TYPES[format] || `audio/${format}`;
+    const canPlay = audio.canPlayType(mime);
+
+    if (canPlay === '') {
+      if (format === 'flac') {
+        return {
+          supported: false,
+          reason: 'FLAC audio format is not supported by your browser engine. Please use standard MP3 or WAV.',
+        };
+      }
+      if (format === 'ogg' || format === 'opus') {
+        return {
+          supported: false,
+          reason: `${format.toUpperCase()} container is not supported by Safari/WebKit. Please use MP3 or AAC.`,
+        };
+      }
+    }
+    return { supported: true };
+  }
+
+  /**
+   * Fetch audio stream with exponential backoff retries and AbortSignal support
+   */
+  private async fetchWithRetry(url: string, signal: AbortSignal, maxRetries = 3): Promise<Response> {
+    let lastErr: any = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (signal.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      try {
+        const response = await fetch(url, { signal });
+        if (response.ok) {
+          return response;
+        }
+        if (response.status >= 400 && response.status < 500 && response.status !== 408) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        throw new Error(`HTTP ${response.status}: Server returned error status`);
+      } catch (err: any) {
+        if (err.name === 'AbortError') throw err;
+        lastErr = err;
+        if (attempt < maxRetries) {
+          const backoff = 250 * Math.pow(2, attempt);
+          await new Promise((resolve) => setTimeout(resolve, backoff));
+        }
+      }
+    }
+    throw lastErr;
+  }
+
   public getVolume(): number {
     return this.volume;
   }
@@ -297,24 +427,41 @@ export class WebAudioEngine {
    */
   public async loadTrack(track: AudioTrackMetadata): Promise<AudioBuffer | null> {
     this.currentTrack = track;
+    this.lastErrorMessage = null;
 
     if (this.audioBufferCache.has(track.id)) {
-      this.activeBuffer = this.audioBufferCache.get(track.id)!;
+      const cached = this.audioBufferCache.get(track.id)!;
+      cached.lastAccessed = Date.now();
+      this.activeBuffer = cached.buffer;
       this.bufferProgress = 100;
       this.state = this.isUnlocked() ? 'ready' : 'locked';
       this.notify();
       return this.activeBuffer;
     }
 
+    // Codec pre-flight check
+    const codecCheck = WebAudioEngine.checkCodecSupport(track.format);
+    if (!codecCheck.supported) {
+      this.lastErrorMessage = codecCheck.reason || `Audio format ${track.format} not supported on this platform`;
+      this.state = 'error';
+      this.bufferProgress = 0;
+      this.notify();
+      return null;
+    }
+
+    // Abort previous in-flight fetch if track was changed
+    if (this.currentAbortController) {
+      this.currentAbortController.abort();
+    }
+    this.currentAbortController = new AbortController();
+    const signal = this.currentAbortController.signal;
+
     this.state = 'buffering';
     this.bufferProgress = 5;
     this.notify();
 
     try {
-      const response = await fetch(track.url);
-      if (!response.ok) {
-        throw new Error(`HTTP error ${response.status} fetching audio stream`);
-      }
+      const response = await this.fetchWithRetry(track.url, signal, 3);
 
       const contentLength = response.headers.get('content-length');
       const totalBytes = contentLength ? parseInt(contentLength, 10) : track.sizeBytes || 0;
@@ -363,14 +510,18 @@ export class WebAudioEngine {
         }).catch(() => {});
       }
 
-      this.audioBufferCache.set(track.id, decodedBuffer);
+      this.addToCache(track.id, decodedBuffer);
       this.activeBuffer = decodedBuffer;
       this.bufferProgress = 100;
       this.state = this.isUnlocked() ? 'ready' : 'locked';
       this.notify();
       return decodedBuffer;
-    } catch (err) {
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        return null;
+      }
       console.error(`Failed to load and decode track ${track.title}`, err);
+      this.lastErrorMessage = err.message || `Failed to stream or decode audio file (${track.format.toUpperCase()})`;
       this.state = 'error';
       this.bufferProgress = 0;
       this.notify();
@@ -381,6 +532,7 @@ export class WebAudioEngine {
   /**
    * Synchronized Playback: schedules AudioBufferSourceNode at exact target Web Audio clock.
    * Avoids unnecessary playback restarts when already in sync.
+   * Includes dynamic catch-up recovery when buffering finishes after scheduled time.
    */
   public async schedulePlay(scheduledServerTime: number, startPositionSec: number = 0, generation: number = 0) {
     if (generation < this.currentGeneration) {
@@ -410,8 +562,8 @@ export class WebAudioEngine {
         return;
       }
 
-      // If drift is small (45ms to 120ms), gently adjust playback rate without audible restart
-      if (driftSec < 0.120 && this.ctx) {
+      // If drift is small (45ms to 150ms), gently adjust playback rate without audible restart
+      if (driftSec < 0.150 && this.ctx) {
         const rate = currentPos < expectedPos ? 1.015 : 0.985;
         this.currentSourceNode.playbackRate.setValueAtTime(rate, this.ctx.currentTime);
         this.currentSourceNode.playbackRate.setValueAtTime(1.0, this.ctx.currentTime + 0.35);
@@ -437,18 +589,36 @@ export class WebAudioEngine {
 
     this.stopActiveSource();
 
-    // Calculate time remaining until scheduled server time
-    const timeDeltaMs = scheduledServerTime - currentServerTime;
-
-    // Apply latency compensation (NTP roundtrip/2 + hardware latency + bluetooth/manual offset)
+    // Latency compensated scheduling and dynamic catch-up
+    const currentServerNow = timeSync.getServerTime();
     const effectiveLatencyMs = timeSync.getMetrics().effectiveTotalLatencyMs;
-    const adjustedDeltaSec = (timeDeltaMs - effectiveLatencyMs) / 1000;
+    const timeDeltaMs = scheduledServerTime - currentServerNow;
 
-    // Convert to Web Audio context timestamp
-    const targetAudioContextTime = Math.max(ctx.currentTime, ctx.currentTime + adjustedDeltaSec);
+    let targetAudioContextTime: number;
+    let safeOffset: number;
 
-    // Guard against position out of bounds
-    const safeOffset = Math.max(0, Math.min(startPositionSec, this.activeBuffer.duration - 0.05));
+    if (timeDeltaMs < 0) {
+      // The scheduled start time was in the past (e.g. network buffering delay or receiver joined mid-stream)
+      // Calculate how much time has elapsed since scheduled start, compensated for output latency
+      const elapsedSec = (Math.abs(timeDeltaMs) + effectiveLatencyMs) / 1000;
+      const livePositionSec = startPositionSec + elapsedSec;
+
+      if (livePositionSec >= this.activeBuffer.duration) {
+        // Track has already ended
+        this.state = 'ready';
+        this.notify();
+        return;
+      }
+
+      // Start immediately from current live offset
+      targetAudioContextTime = ctx.currentTime;
+      safeOffset = Math.max(0, Math.min(livePositionSec, this.activeBuffer.duration - 0.05));
+    } else {
+      // Normal scheduled start in future
+      const adjustedDeltaSec = Math.max(0, (timeDeltaMs - effectiveLatencyMs) / 1000);
+      targetAudioContextTime = ctx.currentTime + adjustedDeltaSec;
+      safeOffset = Math.max(0, Math.min(startPositionSec, this.activeBuffer.duration - 0.05));
+    }
 
     const source = ctx.createBufferSource();
     source.buffer = this.activeBuffer;

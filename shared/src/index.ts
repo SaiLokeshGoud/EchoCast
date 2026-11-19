@@ -33,3 +33,18 @@ export function evaluateSyncQuality(offsetMs: number, rttMs: number): 'excellent
   if (absOffset <= 35 && rttMs <= 120) return 'fair';
   return 'poor';
 }
+
+/**
+ * Audio format MIME type mapping
+ */
+export const AUDIO_MIME_TYPES: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  weba: 'audio/webm',
+  m4a: 'audio/mp4',
+  opus: 'audio/opus',
+  pcm: 'audio/wav',
+};

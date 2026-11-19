@@ -12,6 +12,7 @@ import {
   AlertCircle,
   Copy,
   Check,
+  Wifi,
 } from 'lucide-react';
 import { WsConnectionStatus } from '../../core/network/wsClient';
 
@@ -25,6 +26,7 @@ interface Props {
   roomId: string;
   receiverCount: number;
   onOpenQrModal: () => void;
+  onOpenNetworkGuide?: () => void;
   isAudioUnlocked: boolean;
   onUnlockAudio: () => Promise<boolean>;
 }
@@ -37,6 +39,7 @@ export const Header: React.FC<Props> = ({
   roomId,
   receiverCount,
   onOpenQrModal,
+  onOpenNetworkGuide,
   isAudioUnlocked,
   onUnlockAudio,
 }) => {
@@ -167,6 +170,17 @@ export const Header: React.FC<Props> = ({
             <StatusIcon className="w-3.5 h-3.5 shrink-0" />
             <span className="hidden md:inline font-mono text-[11px]">{status.label}</span>
           </div>
+
+          {/* Network & Hotspot Guide Trigger */}
+          {onOpenNetworkGuide && (
+            <button
+              onClick={onOpenNetworkGuide}
+              className="p-1.5 rounded-xl bg-charcoal-850 hover:bg-charcoal-800 border border-charcoal-750 text-slate-300 hover:text-white transition"
+              title="Open Local Network & Hotspot Guide"
+            >
+              <Wifi className="w-4 h-4 text-cyanAccent-400" />
+            </button>
+          )}
 
           {/* QR Code Trigger Button */}
           <button

@@ -7,6 +7,7 @@ import {
   PlayCommandPayload,
   PauseCommandPayload,
   SeekCommandPayload,
+  AUDIO_MIME_TYPES,
 } from '@echocast/shared';
 import { config } from '../config/index';
 import { syncEngine } from './syncEngineService';
@@ -33,6 +34,8 @@ export class AudioStreamService {
       playlist: [],
       isRoomActive: true,
       roomId: 'CAST-842',
+      authToken: 'rtok_cast842',
+      requireAuth: false,
       generation: 1,
     };
 
@@ -267,6 +270,18 @@ export class AudioStreamService {
     audioLogger.info(`Room state updated: active=${isRoomActive}, roomId=${this.broadcastState.roomId}`);
   }
 
+  public setRoomAuth(authToken: string, requireAuth: boolean = false) {
+    this.broadcastState.authToken = authToken;
+    this.broadcastState.requireAuth = requireAuth;
+    audioLogger.info(`Room auth updated: requireAuth=${requireAuth}, token=${authToken}`);
+  }
+
+  public validateRoomAuth(providedToken?: string): boolean {
+    if (!this.broadcastState.requireAuth) return true;
+    if (!providedToken) return false;
+    return this.broadcastState.authToken === providedToken;
+  }
+
   public nextTrack(): AudioTrackMetadata | null {
     if (this.broadcastState.playlist.length === 0) return null;
     const currentIndex = this.broadcastState.playlist.findIndex((t) => t.id === this.broadcastState.currentTrack?.id);
@@ -339,10 +354,11 @@ export class AudioStreamService {
     return track;
   }
 
-  public play(startPositionSec?: number, delayMs: number = config.defaultScheduleDelayMs): PlayCommandPayload | null {
+  public play(startPositionSec?: number, delayMs?: number): PlayCommandPayload | null {
     if (!this.broadcastState.currentTrack) return null;
 
-    const scheduledServerTime = syncEngine.calculateScheduledTime(delayMs);
+    const effectiveDelay = typeof delayMs === 'number' && delayMs > 0 ? delayMs : config.defaultScheduleDelayMs;
+    const scheduledServerTime = syncEngine.calculateScheduledTime(effectiveDelay);
     const pos = startPositionSec !== undefined ? startPositionSec : this.getBroadcastState().positionSec;
 
     this.broadcastState.isPlaying = true;
@@ -352,13 +368,14 @@ export class AudioStreamService {
     this.broadcastState.scheduledStartTime = scheduledServerTime;
     this.broadcastState.generation += 1;
 
-    audioLogger.info(`Playback scheduled: track=${this.broadcastState.currentTrack.title}, pos=${pos.toFixed(2)}s, at serverTime=${scheduledServerTime}`);
+    audioLogger.info(`Playback scheduled: track=${this.broadcastState.currentTrack.title}, pos=${pos.toFixed(2)}s, delay=${effectiveDelay}ms, at serverTime=${scheduledServerTime}`);
 
     return {
       trackId: this.broadcastState.currentTrack.id,
       scheduledServerTime,
       startPositionSec: pos,
       generation: this.broadcastState.generation,
+      delayMs: effectiveDelay,
     };
   }
 
@@ -383,23 +400,25 @@ export class AudioStreamService {
     };
   }
 
-  public seek(targetPositionSec: number, delayMs: number = config.defaultScheduleDelayMs): SeekCommandPayload | null {
+  public seek(targetPositionSec: number, delayMs?: number): SeekCommandPayload | null {
     if (!this.broadcastState.currentTrack) return null;
 
-    const scheduledServerTime = syncEngine.calculateScheduledTime(delayMs);
+    const effectiveDelay = typeof delayMs === 'number' && delayMs > 0 ? delayMs : config.defaultScheduleDelayMs;
+    const scheduledServerTime = syncEngine.calculateScheduledTime(effectiveDelay);
 
     this.broadcastState.positionSec = targetPositionSec;
     this.broadcastState.referenceServerTime = scheduledServerTime;
     this.broadcastState.scheduledStartTime = scheduledServerTime;
     this.broadcastState.generation += 1;
 
-    audioLogger.info(`Seek scheduled: target=${targetPositionSec.toFixed(2)}s, at serverTime=${scheduledServerTime}`);
+    audioLogger.info(`Seek scheduled: target=${targetPositionSec.toFixed(2)}s, delay=${effectiveDelay}ms, at serverTime=${scheduledServerTime}`);
 
     return {
       trackId: this.broadcastState.currentTrack.id,
       scheduledServerTime,
       targetPositionSec,
       generation: this.broadcastState.generation,
+      delayMs: effectiveDelay,
     };
   }
 
@@ -417,9 +436,11 @@ export class AudioStreamService {
   }
 
   /**
-   * HTTP Stream Handler: handles byte-range requests and stream delivery
+   * HTTP Stream Handler: handles byte-range requests, ETag conditional caching,
+   * backpressure management, and clean connection disconnect handling.
    */
   public handleStreamRequest(req: Request, res: Response, trackId: string) {
+    // 1. Built-in Test Track (WAV buffer in memory)
     if (trackId === 'test-metronome-sync') {
       if (!this.testWavBuffer) {
         res.status(500).json({ error: 'Test buffer not initialized' });
@@ -427,15 +448,31 @@ export class AudioStreamService {
       }
 
       const totalSize = this.testWavBuffer.length;
+      const testEtag = '"test-metronome-sync-v1"';
+      const lastModified = 'Thu, 01 Jan 2026 00:00:00 GMT';
+
+      // Conditional 304 Not Modified
+      if (req.headers['if-none-match'] === testEtag) {
+        res.status(304).end();
+        return;
+      }
+
       const range = req.headers.range;
-
       if (range) {
-        const parts = range.replace(/bytes=/, '').split('-');
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+        const match = range.match(/bytes=(\d*)-(\d*)/);
+        if (!match) {
+          res.status(416).setHeader('Content-Range', `bytes */${totalSize}`).end();
+          return;
+        }
 
-        if (start >= totalSize) {
-          res.status(416).send(`Requested range not satisfiable: ${start} >= ${totalSize}`);
+        let start = match[1] ? parseInt(match[1], 10) : 0;
+        let end = match[2] ? parseInt(match[2], 10) : totalSize - 1;
+
+        if (isNaN(start)) start = 0;
+        if (isNaN(end) || end >= totalSize) end = totalSize - 1;
+
+        if (start > end || start >= totalSize) {
+          res.status(416).setHeader('Content-Range', `bytes */${totalSize}`).end();
           return;
         }
 
@@ -445,6 +482,9 @@ export class AudioStreamService {
           'Accept-Ranges': 'bytes',
           'Content-Length': chunk.length,
           'Content-Type': 'audio/wav',
+          'ETag': testEtag,
+          'Last-Modified': lastModified,
+          'Cache-Control': 'public, max-age=3600, must-revalidate',
           'Access-Control-Allow-Origin': '*',
         });
         res.end(chunk);
@@ -453,15 +493,18 @@ export class AudioStreamService {
 
       res.writeHead(200, {
         'Content-Type': 'audio/wav',
-        'Content-Length': this.testWavBuffer.length,
+        'Content-Length': totalSize,
         'Accept-Ranges': 'bytes',
-        'Cache-Control': 'no-cache',
+        'ETag': testEtag,
+        'Last-Modified': lastModified,
+        'Cache-Control': 'public, max-age=3600, must-revalidate',
         'Access-Control-Allow-Origin': '*',
       });
       res.end(this.testWavBuffer);
       return;
     }
 
+    // 2. Uploaded audio file from disk
     const track = this.tracks.get(trackId);
     if (!track) {
       res.status(404).json({ error: 'Track not found' });
@@ -477,41 +520,64 @@ export class AudioStreamService {
     }
 
     const filePath = path.join(config.uploadDir, targetFile);
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({ error: 'Audio file missing from storage' });
+      return;
+    }
+
     const stat = fs.statSync(filePath);
     const fileSize = stat.size;
+    const lastModified = stat.mtime.toUTCString();
+    const etag = `"${track.id}-${fileSize}-${stat.mtimeMs.toString(36)}"`;
+
+    // Conditional Cache Check (HTTP 304)
+    if (req.headers['if-none-match'] === etag || req.headers['if-modified-since'] === lastModified) {
+      res.status(304).end();
+      return;
+    }
+
+    const contentType = AUDIO_MIME_TYPES[track.format] || 'audio/mpeg';
     const range = req.headers.range;
 
-    const mimeTypes: Record<string, string> = {
-      mp3: 'audio/mpeg',
-      wav: 'audio/wav',
-      ogg: 'audio/ogg',
-      aac: 'audio/aac',
-      flac: 'audio/flac',
-      weba: 'audio/webm',
-      m4a: 'audio/mp4',
-      opus: 'audio/opus',
-    };
-    const contentType = mimeTypes[track.format] || 'audio/mpeg';
-
     if (range) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const match = range.match(/bytes=(\d*)-(\d*)/);
+      if (!match) {
+        res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+        return;
+      }
 
-      if (start >= fileSize) {
-        res.status(416).send(`Requested range not satisfiable: ${start} >= ${fileSize}`);
+      let start = match[1] ? parseInt(match[1], 10) : 0;
+      let end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+
+      if (isNaN(start)) start = 0;
+      if (isNaN(end) || end >= fileSize) end = fileSize - 1;
+
+      if (start > end || start >= fileSize) {
+        res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
         return;
       }
 
       const chunkSize = end - start + 1;
-      const fileStream = fs.createReadStream(filePath, { start, end });
-
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
         'Content-Length': chunkSize,
         'Content-Type': contentType,
+        'ETag': etag,
+        'Last-Modified': lastModified,
+        'Cache-Control': 'public, max-age=3600, must-revalidate',
         'Access-Control-Allow-Origin': '*',
+      });
+
+      const fileStream = fs.createReadStream(filePath, { start, end });
+      fileStream.on('error', (err) => {
+        audioLogger.error(`Stream read error for track ${trackId}:`, err);
+        if (!res.headersSent) res.status(500).end();
+      });
+
+      // Avoid file descriptor leaks when client aborts/disconnects
+      res.on('close', () => {
+        fileStream.destroy();
       });
 
       fileStream.pipe(res);
@@ -520,9 +586,23 @@ export class AudioStreamService {
         'Content-Length': fileSize,
         'Content-Type': contentType,
         'Accept-Ranges': 'bytes',
+        'ETag': etag,
+        'Last-Modified': lastModified,
+        'Cache-Control': 'public, max-age=3600, must-revalidate',
         'Access-Control-Allow-Origin': '*',
       });
-      fs.createReadStream(filePath).pipe(res);
+
+      const fileStream = fs.createReadStream(filePath);
+      fileStream.on('error', (err) => {
+        audioLogger.error(`Stream read error for track ${trackId}:`, err);
+        if (!res.headersSent) res.status(500).end();
+      });
+
+      res.on('close', () => {
+        fileStream.destroy();
+      });
+
+      fileStream.pipe(res);
     }
   }
 }

@@ -97,7 +97,46 @@ export class EchoCastWsServer {
   }
 
   private handleMessage(ws: ExtendedWebSocket, message: WsMessage) {
+    ws.isAlive = true;
     const serverTimestamp = syncEngine.getServerTime();
+
+    // Security & Authorization Guard: Only registered sender can broadcast commands
+    const isSender = (): boolean => {
+      if (!ws.deviceId) return false;
+      const device = deviceManager.getDevice(ws.deviceId);
+      return device !== undefined && device.role === 'sender';
+    };
+
+    const senderOnlyTypes = new Set([
+      'BROADCAST_TRACK_UPDATE',
+      'BROADCAST_PLAY',
+      'BROADCAST_PAUSE',
+      'BROADCAST_SEEK',
+      'BROADCAST_STOP',
+      'BROADCAST_VOLUME',
+      'BROADCAST_PLAYLIST_UPDATE',
+      'BROADCAST_AUTOPLAY_UPDATE',
+      'BROADCAST_ROOM_UPDATE',
+      'ROOM_AUTH_UPDATE',
+      'TRACK_DELETE',
+      'TRACK_UPDATE_METADATA',
+      'REMOTE_SET_RECEIVER_VOLUME',
+      'REMOTE_MUTE_RECEIVER',
+      'REMOTE_DISCONNECT_RECEIVER',
+    ]);
+
+    if (senderOnlyTypes.has(message.type) && !isSender()) {
+      wsLogger.warn(`Blocked unauthorized playback action '${message.type}' from device ${ws.deviceId || 'unregistered'} (${ws.ipAddress})`);
+      this.send(ws, {
+        type: 'ERROR',
+        payload: {
+          code: 'UNAUTHORIZED_ACTION',
+          message: `Action '${message.type}' is restricted to the room sender host.`,
+        },
+        timestamp: serverTimestamp,
+      });
+      return;
+    }
 
     switch (message.type) {
       case 'DEVICE_REGISTER': {
@@ -136,6 +175,29 @@ export class EchoCastWsServer {
             });
             break;
           }
+
+          // Validate room authentication token if room requires authentication
+          if (currentBroadcastState.requireAuth) {
+            const expectedToken = currentBroadcastState.authToken;
+            if (!payload.authToken || payload.authToken !== expectedToken) {
+              wsLogger.warn(`Receiver attempted registration with invalid authToken "${payload.authToken}" for room "${payload.roomId}"`);
+              this.send(ws, {
+                type: 'ERROR',
+                payload: {
+                  code: 'INVALID_ROOM_TOKEN',
+                  message: `Room "${payload.roomId}" requires a valid authentication token. Please scan the QR code or enter the passcode.`,
+                  details: { roomId: currentBroadcastState.roomId },
+                },
+                timestamp: serverTimestamp,
+              });
+              break;
+            }
+          }
+        }
+
+        // If sender registers, update room ID if provided
+        if (payload.role === 'sender' && payload.roomId) {
+          audioStreamService.setRoomState(true, payload.roomId);
         }
 
         // Use existing deviceId or generate consistent client id
@@ -229,7 +291,8 @@ export class EchoCastWsServer {
 
       case 'BROADCAST_PLAY': {
         const startPos = message.payload?.startPositionSec;
-        const playResult = audioStreamService.play(startPos);
+        const delayMs = message.payload?.delayMs;
+        const playResult = audioStreamService.play(startPos, delayMs);
         if (playResult) {
           this.broadcast({
             type: 'BROADCAST_PLAY',
@@ -263,7 +326,8 @@ export class EchoCastWsServer {
       }
 
       case 'BROADCAST_SEEK': {
-        const seekResult = audioStreamService.seek(message.payload.targetPositionSec);
+        const delayMs = message.payload?.delayMs;
+        const seekResult = audioStreamService.seek(message.payload.targetPositionSec, delayMs);
         if (seekResult) {
           this.broadcast({
             type: 'BROADCAST_SEEK',
@@ -333,6 +397,22 @@ export class EchoCastWsServer {
         this.broadcast({
           type: 'BROADCAST_ROOM_UPDATE',
           payload: { isRoomActive, roomId },
+          timestamp: serverTimestamp,
+        });
+        this.broadcast({
+          type: 'BROADCAST_STATE',
+          payload: audioStreamService.getBroadcastState(),
+          timestamp: serverTimestamp,
+        });
+        break;
+      }
+
+      case 'ROOM_AUTH_UPDATE': {
+        const { authToken, requireAuth } = message.payload;
+        audioStreamService.setRoomAuth(authToken, requireAuth);
+        this.broadcast({
+          type: 'ROOM_AUTH_UPDATE',
+          payload: { authToken, requireAuth },
           timestamp: serverTimestamp,
         });
         this.broadcast({

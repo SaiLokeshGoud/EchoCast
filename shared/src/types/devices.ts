@@ -37,6 +37,7 @@ export interface DeviceInfo {
   userAgent?: string;
   audioBufferReady?: boolean;
   roomId?: string;
+  authToken?: string;
 }
 
 export interface DeviceRegistrationPayload {
@@ -46,6 +47,7 @@ export interface DeviceRegistrationPayload {
   outputType: DeviceAudioOutput;
   userAgent?: string;
   roomId?: string;
+  authToken?: string;
 }
 
 export interface DeviceStateUpdatePayload {

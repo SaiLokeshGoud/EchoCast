@@ -14,6 +14,8 @@ export function useAudioEngine() {
   const [isUnlocked, setIsUnlocked] = useState<boolean>(webAudioEngine.isUnlocked());
   const [bufferProgress, setBufferProgress] = useState<number>(webAudioEngine.getBufferProgress());
   const [cacheCount, setCacheCount] = useState<number>(webAudioEngine.getCacheCount());
+  const [maxCacheEntries, setMaxCacheEntriesState] = useState<number>(webAudioEngine.getMaxCacheEntries());
+  const [lastErrorMessage, setLastErrorMessage] = useState<string | null>(webAudioEngine.getLastErrorMessage());
 
   useEffect(() => {
     const unsubscribe = webAudioEngine.subscribe(() => {
@@ -27,6 +29,8 @@ export function useAudioEngine() {
       setIsUnlocked(webAudioEngine.isUnlocked());
       setBufferProgress(webAudioEngine.getBufferProgress());
       setCacheCount(webAudioEngine.getCacheCount());
+      setMaxCacheEntriesState(webAudioEngine.getMaxCacheEntries());
+      setLastErrorMessage(webAudioEngine.getLastErrorMessage());
     });
 
     // Position update interval when playing
@@ -60,6 +64,18 @@ export function useAudioEngine() {
     webAudioEngine.setManualOffsetMs(ms);
   }, []);
 
+  const clearCache = useCallback(() => {
+    webAudioEngine.clearCache();
+  }, []);
+
+  const setMaxCacheEntries = useCallback((max: number) => {
+    webAudioEngine.setMaxCacheEntries(max);
+  }, []);
+
+  const clearError = useCallback(() => {
+    webAudioEngine.clearError();
+  }, []);
+
   return {
     engineState,
     currentTrack,
@@ -71,12 +87,17 @@ export function useAudioEngine() {
     durationSec,
     bufferProgress,
     cacheCount,
+    maxCacheEntries,
+    lastErrorMessage,
     isUnlocked,
     unlockAudio,
     setVolume,
     setMuted,
     setOutputType,
     setManualOffset,
+    clearCache,
+    setMaxCacheEntries,
+    clearError,
     webAudioEngine,
   };
 }

@@ -127,13 +127,28 @@ app.get('/api/room/verify', (req: Request, res: Response) => {
     return;
   }
 
+  const tokenParam = req.query.token as string | undefined;
+  const isTokenValid = !broadcastState.requireAuth || (tokenParam === broadcastState.authToken);
+
   res.json({
     valid: true,
     roomId: broadcastState.roomId,
     isRoomActive: broadcastState.isRoomActive,
+    requireAuth: broadcastState.requireAuth || false,
+    isTokenValid,
     currentTrack: broadcastState.currentTrack,
     senderConnected: deviceManager.getSender() !== undefined,
     connectedReceiversCount: deviceManager.getReceivers().length,
+  });
+});
+
+/**
+ * Local Network Interfaces Endpoint
+ */
+app.get('/api/network/interfaces', (_req: Request, res: Response) => {
+  res.json({
+    interfaces: networkService.getNetworkInterfaces(),
+    primary: networkService.getPrimaryInterface(),
   });
 });
 
@@ -282,6 +297,20 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // Initialize WebSocket server
 wsServer.initialize(server);
 
+// Start dynamic network interface change monitoring
+networkService.startMonitoring(4000);
+networkService.onChange((primaryUrl, interfaces) => {
+  wsServer.broadcast({
+    type: 'NETWORK_STATUS_UPDATE',
+    payload: {
+      primaryUrl,
+      activeInterfaces: interfaces,
+      isHotspotDetected: interfaces.some((i) => i.isHotspot),
+    },
+    timestamp: syncEngine.getServerTime(),
+  });
+});
+
 // Start server
 server.listen(config.port, config.host, () => {
   logger.info(`========================================================`);
@@ -297,6 +326,7 @@ server.listen(config.port, config.host, () => {
 // Graceful shutdown
 process.on('SIGINT', () => {
   logger.info('Shutting down EchoCast server...');
+  networkService.stopMonitoring();
   wsServer.close();
   server.close(() => {
     logger.info('EchoCast server stopped.');

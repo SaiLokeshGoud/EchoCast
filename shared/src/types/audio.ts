@@ -38,6 +38,8 @@ export interface BroadcastState {
   playlist: AudioTrackMetadata[];
   isRoomActive: boolean;
   roomId: string;
+  authToken?: string;
+  requireAuth?: boolean;
   generation: number;            // Monotonically increasing sequence to ignore stale actions
 }
 
@@ -46,6 +48,7 @@ export interface PlayCommandPayload {
   scheduledServerTime: number;
   startPositionSec: number;
   generation: number;
+  delayMs?: number;
 }
 
 export interface PauseCommandPayload {
@@ -59,6 +62,7 @@ export interface SeekCommandPayload {
   scheduledServerTime: number;
   targetPositionSec: number;
   generation: number;
+  delayMs?: number;
 }
 
 export interface VolumeCommandPayload {

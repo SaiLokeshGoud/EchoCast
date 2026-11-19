@@ -9,9 +9,19 @@ interface Props {
   interfaces: NetworkInterfaceInfo[];
   primaryUrl: string;
   roomId?: string;
+  authToken?: string;
+  onOpenNetworkGuide?: () => void;
 }
 
-export const QrCodeModal: React.FC<Props> = ({ isOpen, onClose, interfaces, primaryUrl, roomId = 'CAST-842' }) => {
+export const QrCodeModal: React.FC<Props> = ({
+  isOpen,
+  onClose,
+  interfaces,
+  primaryUrl,
+  roomId = 'CAST-842',
+  authToken,
+  onOpenNetworkGuide,
+}) => {
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [copiedRoom, setCopiedRoom] = useState<boolean>(false);
   const [selectedUrl, setSelectedUrl] = useState<string>(primaryUrl || window.location.origin);
@@ -19,7 +29,8 @@ export const QrCodeModal: React.FC<Props> = ({ isOpen, onClose, interfaces, prim
   if (!isOpen) return null;
 
   const baseUrl = selectedUrl || primaryUrl || window.location.origin;
-  const qrTargetUrl = `${baseUrl}/?room=${encodeURIComponent(roomId)}&role=receiver`;
+  const tokenQuery = authToken ? `&token=${encodeURIComponent(authToken)}` : '';
+  const qrTargetUrl = `${baseUrl}/?room=${encodeURIComponent(roomId)}${tokenQuery}&role=receiver`;
 
   const handleCopy = (url: string) => {
     navigator.clipboard.writeText(url);
@@ -142,13 +153,26 @@ export const QrCodeModal: React.FC<Props> = ({ isOpen, onClose, interfaces, prim
         </div>
 
         {/* Hotspot & Wi-Fi Tip */}
-        <div className="bg-charcoal-850 border border-charcoal-750 rounded-xl p-3 text-[11px] text-slate-400 space-y-1">
-          <p className="font-semibold text-slate-300 flex items-center gap-1">
-            <Radio className="w-3 h-3 text-brand-400" />
-            <span>Mobile Hotspot (No Internet)</span>
-          </p>
+        <div className="bg-charcoal-850 border border-charcoal-750 rounded-xl p-3 text-[11px] text-slate-400 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="font-semibold text-slate-300 flex items-center gap-1.5">
+              <Radio className="w-3.5 h-3.5 text-brand-400" />
+              <span>Mobile Hotspot & Wi-Fi Setup</span>
+            </p>
+            {onOpenNetworkGuide && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onOpenNetworkGuide();
+                }}
+                className="text-brand-400 hover:text-brand-300 font-bold hover:underline"
+              >
+                Setup Guide →
+              </button>
+            )}
+          </div>
           <p>
-            Connect other phones or laptops to this device's Portable Hotspot Wi-Fi, then scan the QR code to stream.
+            Connect other phones or laptops to this device's Portable Hotspot or Wi-Fi router, then scan the QR code to stream.
           </p>
         </div>
       </div>

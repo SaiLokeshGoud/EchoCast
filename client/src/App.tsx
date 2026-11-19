@@ -7,10 +7,12 @@ import {
   PlayCommandPayload,
   PauseCommandPayload,
   SeekCommandPayload,
+  NetworkInterfaceInfo,
 } from '@echocast/shared';
 import { Header, AppScreen } from './components/common/Header';
 import { QrCodeModal } from './components/common/QrCodeModal';
 import { AudioUnlockModal } from './components/common/AudioUnlockModal';
+import { NetworkTroubleshootingModal } from './components/common/NetworkTroubleshootingModal';
 import { WelcomeScreen } from './components/welcome/WelcomeScreen';
 import { SenderDashboard } from './components/sender/SenderDashboard';
 import { ReceiverDashboard } from './components/receiver/ReceiverDashboard';
@@ -68,13 +70,29 @@ export function App() {
     );
   }, [searchParams]);
 
+  const initialAuthToken = useMemo(() => {
+    return (
+      searchParams.get('token') ||
+      localStorage.getItem('echocast_auth_token') ||
+      'rtok_cast842'
+    );
+  }, [searchParams]);
+
   const [activeScreen, setActiveScreen] = useState<AppScreen>(initialScreen);
   const [role, setRole] = useState<DeviceRole>(initialScreen === 'sender' ? 'sender' : 'receiver');
   const [roomId, setRoomId] = useState<string>(initialRoomId);
+  const [authToken, setAuthToken] = useState<string>(initialAuthToken);
+  const [requireAuth, setRequireAuth] = useState<boolean>(false);
   const [isRoomActive, setIsRoomActive] = useState<boolean>(true);
   const [connectionStatus, setConnectionStatus] = useState<WsConnectionStatus>('disconnected');
   const [roomValidationError, setRoomValidationError] = useState<string | null>(null);
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [isNetworkGuideOpen, setIsNetworkGuideOpen] = useState(false);
+  const [networkOverrides, setNetworkOverrides] = useState<{
+    primaryUrl?: string;
+    activeInterfaces?: NetworkInterfaceInfo[];
+    isHotspotDetected?: boolean;
+  }>({});
   const [tracks, setTracks] = useState<AudioTrackMetadata[]>([]);
   const [playlist, setPlaylist] = useState<AudioTrackMetadata[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -102,12 +120,17 @@ export function App() {
     durationSec,
     bufferProgress,
     cacheCount,
+    maxCacheEntries,
+    lastErrorMessage,
     isUnlocked,
     unlockAudio,
     setVolume,
     setMuted,
     setOutputType,
     setManualOffset,
+    clearCache,
+    setMaxCacheEntries,
+    clearError,
     webAudioEngine,
   } = useAudioEngine();
 
@@ -152,6 +175,7 @@ export function App() {
           outputType,
           userAgent: navigator.userAgent,
           roomId,
+          authToken,
         });
       }
     });
@@ -176,12 +200,31 @@ export function App() {
       if (state.roomId) {
         setRoomId(state.roomId);
       }
+      if (state.authToken) {
+        setAuthToken(state.authToken);
+      }
+      if (state.requireAuth !== undefined) {
+        setRequireAuth(state.requireAuth);
+      }
       if (state.currentTrack) {
         webAudioEngine.loadTrack(state.currentTrack);
       }
       if (state.isPlaying && state.scheduledStartTime) {
         webAudioEngine.schedulePlay(state.scheduledStartTime, state.positionSec, state.generation);
       }
+    });
+
+    // Listen to network status and IP changes
+    const unbindNetwork = wsClient.on<{
+      primaryUrl: string;
+      activeInterfaces: NetworkInterfaceInfo[];
+      isHotspotDetected: boolean;
+    }>('NETWORK_STATUS_UPDATE', (payload) => {
+      setNetworkOverrides({
+        primaryUrl: payload.primaryUrl,
+        activeInterfaces: payload.activeInterfaces,
+        isHotspotDetected: payload.isHotspotDetected,
+      });
     });
 
     // Listen to track updates
@@ -259,8 +302,9 @@ export function App() {
       unbindRemoteMute();
       unbindDisconnect();
       unbindError();
+      unbindNetwork();
     };
-  }, [deviceName, role, platform, outputType, roomId, fetchTracks, webAudioEngine, setVolume, setMuted]);
+  }, [deviceName, role, platform, outputType, roomId, authToken, fetchTracks, webAudioEngine, setVolume, setMuted]);
 
   // Periodic heartbeat reporting local metrics to server
   useEffect(() => {
@@ -309,9 +353,14 @@ export function App() {
   };
 
   // Room ID update handler
-  const handleUpdateRoomId = (newRoomId: string) => {
+  const handleUpdateRoomId = (newRoomId: string, customToken?: string) => {
     setRoomValidationError(null);
     setRoomId(newRoomId);
+    const tokenToUse = customToken !== undefined ? customToken : authToken;
+    if (customToken) {
+      setAuthToken(customToken);
+      localStorage.setItem('echocast_auth_token', customToken);
+    }
     localStorage.setItem('echocast_room_id', newRoomId);
     wsClient.register({
       name: deviceName,
@@ -320,11 +369,25 @@ export function App() {
       outputType,
       userAgent: navigator.userAgent,
       roomId: newRoomId,
+      authToken: tokenToUse,
     });
     if (role === 'sender') {
       wsClient.send({
         type: 'BROADCAST_ROOM_UPDATE',
         payload: { isRoomActive, roomId: newRoomId },
+        timestamp: Date.now(),
+      });
+    }
+  };
+
+  const handleUpdateAuth = (token: string, required: boolean) => {
+    setAuthToken(token);
+    setRequireAuth(required);
+    localStorage.setItem('echocast_auth_token', token);
+    if (role === 'sender') {
+      wsClient.send({
+        type: 'ROOM_AUTH_UPDATE',
+        payload: { authToken: token, requireAuth: required },
         timestamp: Date.now(),
       });
     }
@@ -363,6 +426,11 @@ export function App() {
     });
   };
 
+  const handleUpdateBufferDelay = (delayMs: number) => {
+    setBufferDelayMs(delayMs);
+    webAudioEngine.setScheduleDelayMs(delayMs);
+  };
+
   // Sender transport triggers
   const handlePlay = (startPos?: number) => {
     wsClient.send({
@@ -372,6 +440,7 @@ export function App() {
         scheduledServerTime: 0,
         startPositionSec: startPos !== undefined ? startPos : positionSec,
         generation: 0,
+        delayMs: bufferDelayMs,
       },
       timestamp: Date.now(),
     });
@@ -397,6 +466,7 @@ export function App() {
         scheduledServerTime: 0,
         targetPositionSec: targetPos,
         generation: 0,
+        delayMs: bufferDelayMs,
       },
       timestamp: Date.now(),
     });
@@ -490,6 +560,10 @@ export function App() {
     webAudioEngine.playTestPulse(0, 1000, 60);
   };
 
+  const effectivePrimaryUrl = networkOverrides.primaryUrl || serverStatus?.primaryUrl || window.location.origin;
+  const effectiveInterfaces = networkOverrides.activeInterfaces || serverStatus?.activeInterfaces || [];
+  const effectiveIsHotspot = networkOverrides.isHotspotDetected ?? serverStatus?.isHotspotDetected ?? false;
+
   return (
     <div className="min-h-screen flex flex-col bg-charcoal-950 text-slate-100 selection:bg-brand-500 selection:text-charcoal-950">
       {/* Top Persistent Header */}
@@ -497,10 +571,11 @@ export function App() {
         activeScreen={activeScreen}
         onNavigate={handleNavigate}
         connectionStatus={connectionStatus}
-        primaryUrl={serverStatus?.primaryUrl || window.location.origin}
+        primaryUrl={effectivePrimaryUrl}
         roomId={roomId}
         receiverCount={receivers.length}
         onOpenQrModal={() => setIsQrModalOpen(true)}
+        onOpenNetworkGuide={() => setIsNetworkGuideOpen(true)}
         isAudioUnlocked={isUnlocked}
         onUnlockAudio={unlockAudio}
       />
@@ -549,8 +624,8 @@ export function App() {
             onDeleteTrack={handleDeleteTrack}
             onReorderPlaylist={handleReorderPlaylist}
             onNavigateToDevices={() => handleNavigate('devices')}
-            primaryUrl={serverStatus?.primaryUrl || window.location.origin}
-            isHotspotDetected={serverStatus?.isHotspotDetected || false}
+            primaryUrl={effectivePrimaryUrl}
+            isHotspotDetected={effectiveIsHotspot}
           />
         )}
 
@@ -561,7 +636,7 @@ export function App() {
             connectionStatus={connectionStatus}
             roomValidationError={roomValidationError}
             senderInfo={{
-              primaryUrl: serverStatus?.primaryUrl || window.location.origin,
+              primaryUrl: effectivePrimaryUrl,
               senderConnected: sender !== undefined || serverStatus?.senderConnected || false,
               connectedReceiversCount: receivers.length,
             }}
@@ -580,6 +655,8 @@ export function App() {
             outputType={outputType}
             manualOffsetMs={manualOffsetMs}
             syncMetrics={syncMetrics}
+            lastErrorMessage={lastErrorMessage}
+            onClearError={clearError}
             isAudioUnlocked={isUnlocked}
             onUnlockAudio={unlockAudio}
             onVolumeChange={setVolume}
@@ -613,9 +690,17 @@ export function App() {
             onForceSync={forceSync}
             serverStatus={serverStatus}
             bufferDelayMs={bufferDelayMs}
-            onUpdateBufferDelay={setBufferDelayMs}
+            onUpdateBufferDelay={handleUpdateBufferDelay}
             audioSampleRate={audioSampleRate}
             onUpdateSampleRate={setAudioSampleRate}
+            cacheCount={cacheCount}
+            maxCacheEntries={maxCacheEntries}
+            onClearCache={clearCache}
+            onUpdateMaxCache={setMaxCacheEntries}
+            authToken={authToken}
+            requireAuth={requireAuth}
+            onUpdateAuth={handleUpdateAuth}
+            onOpenNetworkGuide={() => setIsNetworkGuideOpen(true)}
           />
         )}
       </main>
@@ -624,9 +709,20 @@ export function App() {
       <QrCodeModal
         isOpen={isQrModalOpen}
         onClose={() => setIsQrModalOpen(false)}
-        interfaces={serverStatus?.activeInterfaces || []}
-        primaryUrl={serverStatus?.primaryUrl || window.location.origin}
+        interfaces={effectiveInterfaces}
+        primaryUrl={effectivePrimaryUrl}
         roomId={roomId}
+        authToken={authToken}
+        onOpenNetworkGuide={() => setIsNetworkGuideOpen(true)}
+      />
+
+      {/* Local Network & Hotspot Troubleshooting Guide Modal */}
+      <NetworkTroubleshootingModal
+        isOpen={isNetworkGuideOpen}
+        onClose={() => setIsNetworkGuideOpen(false)}
+        interfaces={effectiveInterfaces}
+        primaryUrl={effectivePrimaryUrl}
+        isHotspotDetected={effectiveIsHotspot}
       />
 
       {/* Floating Audio Hardware Unlock Banner */}
@@ -638,6 +734,6 @@ export function App() {
       </footer>
     </div>
   );
-}
+};
 
 export default App;

@@ -8,6 +8,8 @@ export interface NetworkInterfaceInfo {
   family: 'IPv4';
   isHotspot: boolean;  // Detected hotspot subnet (e.g. 192.168.43.x, 172.20.10.x, etc.)
   isWifi: boolean;     // Detected Wi-Fi adapter
+  isVirtual?: boolean; // Detected hypervisor/virtual bridge adapter (WSL, Hyper-V, Docker)
+  typeLabel?: string;  // Human-friendly label e.g. "Mobile Hotspot", "Wi-Fi Router", "Ethernet"
   url: string;         // Fully qualified HTTP URL e.g. "http://192.168.1.15:4000"
   wsUrl: string;       // Fully qualified WS URL e.g. "ws://192.168.1.15:4000/ws"
 }

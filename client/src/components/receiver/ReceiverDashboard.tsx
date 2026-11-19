@@ -56,6 +56,8 @@ interface Props {
   outputType: DeviceAudioOutput;
   manualOffsetMs: number;
   syncMetrics: SyncMetrics;
+  lastErrorMessage?: string | null;
+  onClearError?: () => void;
   isAudioUnlocked: boolean;
   onUnlockAudio: () => Promise<boolean>;
   onVolumeChange: (vol: number) => void;
@@ -88,6 +90,8 @@ export const ReceiverDashboard: React.FC<Props> = ({
   outputType,
   manualOffsetMs,
   syncMetrics,
+  lastErrorMessage,
+  onClearError,
   isAudioUnlocked,
   onUnlockAudio,
   onVolumeChange,
@@ -447,6 +451,27 @@ export const ReceiverDashboard: React.FC<Props> = ({
           >
             Activate Speaker
           </button>
+        </div>
+      )}
+
+      {/* Stream / Codec Error Alert */}
+      {(engineState === 'error' || lastErrorMessage) && (
+        <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 flex items-center justify-between gap-3 shadow-md animate-in fade-in duration-200">
+          <div className="flex items-center gap-2.5">
+            <AlertCircle className="w-5 h-5 shrink-0 text-rose-400" />
+            <div className="text-xs">
+              <span className="font-bold block">Audio Stream Notice</span>
+              <span>{lastErrorMessage || 'Failed to stream audio file from sender host.'}</span>
+            </div>
+          </div>
+          {onClearError && (
+            <button
+              onClick={onClearError}
+              className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-xs font-semibold rounded-xl border border-rose-500/30 transition shrink-0 active:scale-95"
+            >
+              Dismiss
+            </button>
+          )}
         </div>
       )}
 
