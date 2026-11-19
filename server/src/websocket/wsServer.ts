@@ -122,7 +122,10 @@ export class EchoCastWsServer {
       'TRACK_UPDATE_METADATA',
       'REMOTE_SET_RECEIVER_VOLUME',
       'REMOTE_MUTE_RECEIVER',
+      'REMOTE_UPDATE_RECEIVER',
       'REMOTE_DISCONNECT_RECEIVER',
+      'GROUP_MUTE_ALL',
+      'GROUP_VOLUME_ALL',
     ]);
 
     if (senderOnlyTypes.has(message.type) && !isSender()) {
@@ -200,8 +203,20 @@ export class EchoCastWsServer {
           audioStreamService.setRoomState(true, payload.roomId);
         }
 
-        // Use existing deviceId or generate consistent client id
-        const deviceId = ws.deviceId || crypto.randomUUID();
+        // Support reconnecting with existing deviceId from client storage, or use current / new UUID
+        const deviceId = payload.deviceId || ws.deviceId || crypto.randomUUID();
+
+        // If an older stale socket is still hanging for this deviceId, gracefully terminate it
+        const existingSocket = this.clientSockets.get(deviceId);
+        if (existingSocket && existingSocket !== ws) {
+          wsLogger.info(`Closing stale connection for reconnected deviceId: ${deviceId}`);
+          try {
+            existingSocket.terminate();
+          } catch {
+            // Ignore termination error
+          }
+        }
+
         ws.deviceId = deviceId;
         this.clientSockets.set(deviceId, ws);
 
@@ -495,6 +510,52 @@ export class EchoCastWsServer {
             payload: { targetDeviceId, isMuted },
             timestamp: serverTimestamp,
           });
+        }
+        break;
+      }
+
+      case 'REMOTE_UPDATE_RECEIVER': {
+        const { targetDeviceId, name, outputType } = message.payload;
+        deviceManager.updateDeviceState(targetDeviceId, { name, outputType });
+        const targetSocket = this.clientSockets.get(targetDeviceId);
+        if (targetSocket) {
+          this.send(targetSocket, {
+            type: 'REMOTE_UPDATE_RECEIVER',
+            payload: { targetDeviceId, name, outputType },
+            timestamp: serverTimestamp,
+          });
+        }
+        break;
+      }
+
+      case 'GROUP_VOLUME_ALL': {
+        const { volume } = message.payload;
+        deviceManager.setGroupVolume(volume);
+        for (const [id, s] of this.clientSockets.entries()) {
+          const dev = deviceManager.getDevice(id);
+          if (dev && dev.role === 'receiver') {
+            this.send(s, {
+              type: 'REMOTE_SET_RECEIVER_VOLUME',
+              payload: { targetDeviceId: id, volume },
+              timestamp: serverTimestamp,
+            });
+          }
+        }
+        break;
+      }
+
+      case 'GROUP_MUTE_ALL': {
+        const { isMuted } = message.payload;
+        deviceManager.setGroupMute(isMuted);
+        for (const [id, s] of this.clientSockets.entries()) {
+          const dev = deviceManager.getDevice(id);
+          if (dev && dev.role === 'receiver') {
+            this.send(s, {
+              type: 'REMOTE_MUTE_RECEIVER',
+              payload: { targetDeviceId: id, isMuted },
+              timestamp: serverTimestamp,
+            });
+          }
         }
         break;
       }

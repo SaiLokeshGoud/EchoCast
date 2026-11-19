@@ -85,6 +85,57 @@ export function evaluateSyncHealthTag(syncErrorMs?: number): {
   };
 }
 
+export interface NetworkQualityResult {
+  score: number; // 0 to 100
+  label: string;
+  color: string;
+  badgeClass: string;
+  indicator: 'optimal' | 'good' | 'fair' | 'poor';
+}
+
+/**
+ * Evaluate measurable local Wi-Fi / Hotspot link quality based on RTT and jitter
+ */
+export function evaluateNetworkQuality(rttMs: number, jitterMs: number = 0): NetworkQualityResult {
+  let score = 100 - (rttMs * 0.45 + jitterMs * 1.5);
+  score = Math.max(5, Math.min(100, Math.round(score)));
+
+  if (rttMs <= 25 && jitterMs <= 6) {
+    return {
+      score,
+      label: 'Optimal',
+      color: 'text-emerald-400',
+      badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+      indicator: 'optimal',
+    };
+  }
+  if (rttMs <= 60 && jitterMs <= 18) {
+    return {
+      score,
+      label: 'Good',
+      color: 'text-cyanAccent-400',
+      badgeClass: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30',
+      indicator: 'good',
+    };
+  }
+  if (rttMs <= 120 && jitterMs <= 35) {
+    return {
+      score,
+      label: 'Fair',
+      color: 'text-amber-400',
+      badgeClass: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+      indicator: 'fair',
+    };
+  }
+  return {
+    score,
+    label: 'Congested',
+    color: 'text-rose-400',
+    badgeClass: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
+    indicator: 'poor',
+  };
+}
+
 /**
  * Audio format MIME type mapping
  */

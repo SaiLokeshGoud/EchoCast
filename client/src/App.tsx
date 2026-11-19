@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   DeviceRole,
   DevicePlatform,
+  DeviceAudioOutput,
   AudioTrackMetadata,
   BroadcastState,
   PlayCommandPayload,
@@ -142,7 +143,10 @@ export function App() {
     sender,
     setRemoteReceiverVolume,
     muteRemoteReceiver,
+    updateRemoteReceiver,
     disconnectRemoteReceiver,
+    setGroupVolume,
+    setGroupMute,
   } = useDeviceRoster();
 
   const { status: serverStatus } = useServerStatus();
@@ -277,6 +281,21 @@ export function App() {
       setMuted(payload.isMuted);
     });
 
+    const unbindRemoteUpdate = wsClient.on<{ targetDeviceId: string; name?: string; outputType?: DeviceAudioOutput }>(
+      'REMOTE_UPDATE_RECEIVER',
+      (payload) => {
+        if (payload.targetDeviceId === wsClient.getDeviceId()) {
+          if (payload.name) {
+            setDeviceName(payload.name);
+            localStorage.setItem('echocast_device_name', payload.name);
+          }
+          if (payload.outputType) {
+            setOutputType(payload.outputType);
+          }
+        }
+      }
+    );
+
     // Remote disconnect notification
     const unbindDisconnect = wsClient.on<{ reason?: string }>('REMOTE_DISCONNECT_RECEIVER', (payload) => {
       alert(`You have been disconnected from the stream: ${payload.reason || 'By Host'}`);
@@ -302,6 +321,7 @@ export function App() {
       unbindPulse();
       unbindRemoteVol();
       unbindRemoteMute();
+      unbindRemoteUpdate();
       unbindDisconnect();
       unbindError();
       unbindNetwork();
@@ -583,6 +603,18 @@ export function App() {
     webAudioEngine.playTestPulse(0, 1000, 60);
   };
 
+  const handleBroadcastTestPulse = () => {
+    wsClient.send({
+      type: 'TEST_PULSE_PLAY',
+      payload: {
+        scheduledServerTime: 0,
+        frequencyHz: 1000,
+        durationMs: 70,
+      },
+      timestamp: Date.now(),
+    });
+  };
+
   const effectivePrimaryUrl = networkOverrides.primaryUrl || serverStatus?.primaryUrl || window.location.origin;
   const effectiveInterfaces = networkOverrides.activeInterfaces || serverStatus?.activeInterfaces || [];
   const effectiveIsHotspot = networkOverrides.isHotspotDetected ?? serverStatus?.isHotspotDetected ?? false;
@@ -701,9 +733,21 @@ export function App() {
           <DeviceManagementScreen
             devices={devices}
             sender={sender}
+            isPlaying={isPlaying}
+            currentTrack={currentTrack}
             onRemoteVolume={setRemoteReceiverVolume}
             onRemoteMute={muteRemoteReceiver}
+            onUpdateReceiver={updateRemoteReceiver}
             onDisconnectDevice={disconnectRemoteReceiver}
+            onGroupPlay={() => handlePlay()}
+            onGroupPause={handlePause}
+            onGroupStop={handleStop}
+            onGroupNextTrack={handleNextTrack}
+            onGroupPrevTrack={handlePreviousTrack}
+            onGroupVolume={setGroupVolume}
+            onGroupMute={setGroupMute}
+            onBroadcastTestPulse={handleBroadcastTestPulse}
+            onNavigateToSender={() => handleNavigate('sender')}
           />
         )}
 

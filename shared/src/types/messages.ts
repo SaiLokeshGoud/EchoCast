@@ -1,4 +1,4 @@
-import { DeviceInfo, DeviceRegistrationPayload, DeviceStateUpdatePayload } from './devices';
+import { DeviceInfo, DeviceRegistrationPayload, DeviceStateUpdatePayload, DeviceAudioOutput } from './devices';
 import { SyncPingPayload, SyncPongPayload } from './sync';
 import { NetworkInterfaceInfo } from './network';
 import {
@@ -50,7 +50,10 @@ export type WsMessageType =
   // Remote Sender controls on specific receiver
   | 'REMOTE_SET_RECEIVER_VOLUME'
   | 'REMOTE_MUTE_RECEIVER'
+  | 'REMOTE_UPDATE_RECEIVER'
   | 'REMOTE_DISCONNECT_RECEIVER'
+  | 'GROUP_MUTE_ALL'
+  | 'GROUP_VOLUME_ALL'
   | 'ERROR';
 
 export interface BaseWsMessage<T = unknown> {
@@ -85,7 +88,10 @@ export type WsMessage =
   | { type: 'TEST_PULSE_PLAY'; payload: { scheduledServerTime: number; frequencyHz: number; durationMs: number }; timestamp: number; senderId?: string }
   | { type: 'REMOTE_SET_RECEIVER_VOLUME'; payload: { targetDeviceId: string; volume: number }; timestamp: number; senderId?: string }
   | { type: 'REMOTE_MUTE_RECEIVER'; payload: { targetDeviceId: string; isMuted: boolean }; timestamp: number; senderId?: string }
+  | { type: 'REMOTE_UPDATE_RECEIVER'; payload: { targetDeviceId: string; name?: string; outputType?: DeviceAudioOutput }; timestamp: number; senderId?: string }
   | { type: 'REMOTE_DISCONNECT_RECEIVER'; payload: { targetDeviceId: string; reason?: string }; timestamp: number; senderId?: string }
+  | { type: 'GROUP_MUTE_ALL'; payload: { isMuted: boolean }; timestamp: number; senderId?: string }
+  | { type: 'GROUP_VOLUME_ALL'; payload: { volume: number }; timestamp: number; senderId?: string }
   | { type: 'NETWORK_STATUS_UPDATE'; payload: { primaryUrl: string; activeInterfaces: NetworkInterfaceInfo[]; isHotspotDetected: boolean }; timestamp: number; senderId?: string }
   | { type: 'ROOM_AUTH_UPDATE'; payload: { authToken: string; requireAuth: boolean }; timestamp: number; senderId?: string }
   | { type: 'ERROR'; payload: { code: string; message: string; details?: unknown }; timestamp: number; senderId?: string };

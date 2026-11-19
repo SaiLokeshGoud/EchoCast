@@ -50,6 +50,7 @@ export interface DeviceInfo {
 }
 
 export interface DeviceRegistrationPayload {
+  deviceId?: string;
   name: string;
   role: DeviceRole;
   platform: DevicePlatform;
@@ -60,6 +61,7 @@ export interface DeviceRegistrationPayload {
 }
 
 export interface DeviceStateUpdatePayload {
+  name?: string;
   status?: DeviceStatus;
   outputType?: DeviceAudioOutput;
   roundTripTimeMs?: number;

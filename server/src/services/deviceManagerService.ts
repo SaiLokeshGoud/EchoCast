@@ -39,6 +39,17 @@ export class DeviceManagerService {
     ipAddress?: string
   ): DeviceInfo {
     const now = Date.now();
+
+    // Duplicate session mitigation: if another device with the same IP and name exists (e.g. from browser reload), clean it up
+    if (ipAddress && payload.role === 'receiver') {
+      for (const [id, d] of this.devices.entries()) {
+        if (id !== deviceId && d.ipAddress === ipAddress && d.name === payload.name && d.role === payload.role) {
+          devLogger.info(`Cleaning up stale duplicate session ${id} for device ${payload.name} (${ipAddress})`);
+          this.devices.delete(id);
+        }
+      }
+    }
+
     const existing = this.devices.get(deviceId);
 
     const device: DeviceInfo = {
@@ -78,6 +89,7 @@ export class DeviceManagerService {
     const device = this.devices.get(deviceId);
     if (!device) return null;
 
+    if (updates.name !== undefined && updates.name.trim()) device.name = updates.name.trim();
     if (updates.status !== undefined) device.status = updates.status;
     if (updates.outputType !== undefined) device.outputType = updates.outputType;
     if (updates.roundTripTimeMs !== undefined) device.roundTripTimeMs = updates.roundTripTimeMs;
@@ -140,6 +152,25 @@ export class DeviceManagerService {
 
   public getSender(): DeviceInfo | undefined {
     return this.getAllDevices().find((d) => d.role === 'sender');
+  }
+
+  public setGroupVolume(volume: number) {
+    const clamped = Math.max(0, Math.min(1, volume));
+    for (const d of this.devices.values()) {
+      if (d.role === 'receiver') {
+        d.volume = clamped;
+      }
+    }
+    this.notify();
+  }
+
+  public setGroupMute(isMuted: boolean) {
+    for (const d of this.devices.values()) {
+      if (d.role === 'receiver') {
+        d.isMuted = isMuted;
+      }
+    }
+    this.notify();
   }
 }
 

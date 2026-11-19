@@ -24,6 +24,11 @@ export class EchoCastWsClient {
 
   constructor() {
     this.serverUrl = this.resolveDefaultWsUrl();
+    try {
+      this.deviceId = localStorage.getItem('echocast_device_id');
+    } catch {
+      // Ignore storage errors in restricted contexts
+    }
     timeSync.onNeedsCalibration(() => {
       if (this.status === 'connected') {
         this.startInitialSyncBurst();
@@ -164,6 +169,11 @@ export class EchoCastWsClient {
   private handleIncomingMessage(message: WsMessage) {
     if (message.type === 'DEVICE_REGISTERED') {
       this.deviceId = message.payload.id;
+      try {
+        localStorage.setItem('echocast_device_id', message.payload.id);
+      } catch {
+        // Ignore
+      }
     }
 
     if (message.type === 'SYNC_PONG') {
@@ -231,6 +241,9 @@ export class EchoCastWsClient {
   }
 
   public register(payload: DeviceRegistrationPayload) {
+    if (!payload.deviceId && this.deviceId) {
+      payload.deviceId = this.deviceId;
+    }
     this.send({
       type: 'DEVICE_REGISTER',
       payload,
