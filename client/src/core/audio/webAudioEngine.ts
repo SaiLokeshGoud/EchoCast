@@ -496,6 +496,7 @@ export class WebAudioEngine {
           merged.set(chunk, offset);
           offset += chunk.length;
         }
+        chunks.length = 0; // Release memory for chunk buffers immediately
         arrayBuffer = merged.buffer;
       } else {
         arrayBuffer = await response.arrayBuffer();
@@ -798,6 +799,7 @@ export class WebAudioEngine {
     this.stopDriftMonitor();
     if (this.currentSourceNode) {
       try {
+        this.currentSourceNode.onended = null;
         this.currentSourceNode.stop();
         this.currentSourceNode.disconnect();
       } catch {

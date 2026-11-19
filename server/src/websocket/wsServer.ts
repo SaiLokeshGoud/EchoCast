@@ -47,7 +47,15 @@ export class EchoCastWsServer {
       ws.on('message', (data) => {
         try {
           const raw = data.toString();
+          if (raw.length > 65536) {
+            this.sendError(ws, 'PAYLOAD_TOO_LARGE', 'WebSocket payload exceeds 64KB limit');
+            return;
+          }
           const message: WsMessage = JSON.parse(raw);
+          if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
+            this.sendError(ws, 'INVALID_MESSAGE_FORMAT', 'Message must be an object with a string type property');
+            return;
+          }
           this.handleMessage(ws, message);
         } catch (err) {
           wsLogger.error('Failed to parse incoming WebSocket message', err);
@@ -126,6 +134,7 @@ export class EchoCastWsServer {
       'REMOTE_DISCONNECT_RECEIVER',
       'GROUP_MUTE_ALL',
       'GROUP_VOLUME_ALL',
+      'TEST_PULSE_PLAY',
     ]);
 
     if (senderOnlyTypes.has(message.type) && !isSender()) {

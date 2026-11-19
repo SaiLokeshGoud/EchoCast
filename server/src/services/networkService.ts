@@ -184,6 +184,23 @@ export class NetworkService {
     return () => this.changeListeners.delete(listener);
   }
 
+  /**
+   * Manually broadcast network address update (used during tests or hotspot migration)
+   */
+  public triggerAddressChange(simulatedIp: string) {
+    netLogger.warn(`Network IP change triggered: ${this.lastPrimaryIp} -> ${simulatedIp}`);
+    this.lastPrimaryIp = simulatedIp;
+    const allIfaces = this.getNetworkInterfaces();
+    const primaryUrl = `http://${simulatedIp}:${config.port}`;
+    for (const listener of this.changeListeners) {
+      try {
+        listener(primaryUrl, allIfaces);
+      } catch (e) {
+        netLogger.error('Error notifying network change listener', e);
+      }
+    }
+  }
+
   public logDetectedInterfaces() {
     const ifaces = this.getNetworkInterfaces();
     netLogger.info(`Local network discovery complete. Detected ${ifaces.length} IPv4 interface(s):`);

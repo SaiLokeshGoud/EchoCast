@@ -159,7 +159,10 @@ export class EchoCastWsClient {
 
   private scheduleReconnect() {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), this.maxReconnectDelayMs);
+    // Exponential backoff with random jitter to prevent thundering herd on server restart
+    const baseDelay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), this.maxReconnectDelayMs);
+    const jitter = Math.random() * 600;
+    const delay = Math.round(baseDelay + jitter);
     this.reconnectAttempts++;
     this.reconnectTimer = setTimeout(() => {
       this.connect();

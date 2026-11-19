@@ -15,6 +15,7 @@ import { syncEngine } from './services/syncEngineService';
 import { deviceManager } from './services/deviceManagerService';
 import { audioStreamService } from './services/audioStreamService';
 import { wsServer } from './websocket/wsServer';
+import { validateAudioFileHeader } from './utils/audioValidator';
 
 const app = express();
 const server = http.createServer(app);
@@ -153,6 +154,19 @@ app.get('/api/network/interfaces', (_req: Request, res: Response) => {
 });
 
 /**
+ * Simulate or trigger network IP address change notification (used during hotspot migration & testing)
+ */
+app.post('/api/network/simulate-change', (req: Request, res: Response) => {
+  const { newIp } = req.body;
+  if (!newIp) {
+    res.status(400).json({ error: 'newIp required' });
+    return;
+  }
+  networkService.triggerAddressChange(newIp);
+  res.json({ success: true, newIp });
+});
+
+/**
  * Audio Catalog Endpoint
  */
 app.get('/api/audio/tracks', (_req: Request, res: Response) => {
@@ -174,46 +188,73 @@ app.get('/api/audio/stream/:trackId', (req: Request, res: Response) => {
 });
 
 /**
- * Upload Audio Track(s) Endpoint - supports single or batch file uploads
+ * Upload Audio Track(s) Endpoint - supports single or batch file uploads with security header validation
  */
-app.post('/api/audio/upload', upload.array('audio', 20), (req: Request, res: Response) => {
-  const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
-  if (!files || files.length === 0) {
-    res.status(400).json({ error: 'No audio file provided' });
-    return;
-  }
+app.post('/api/audio/upload', (req: Request, res: Response) => {
+  upload.array('audio', 20)(req, res, (err: any) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          res.status(413).json({
+            error: 'File size limit exceeded',
+            message: `Uploaded file exceeds maximum allowed size (${config.maxUploadSizeBytes / (1024 * 1024)}MB)`,
+          });
+          return;
+        }
+        res.status(400).json({ error: err.code, message: err.message });
+        return;
+      }
+      res.status(400).json({ error: 'Upload Error', message: err.message });
+      return;
+    }
 
-  const newTracks: AudioTrackMetadata[] = [];
+    const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
+    if (!files || files.length === 0) {
+      res.status(400).json({ error: 'No audio file provided' });
+      return;
+    }
 
-  for (const file of files) {
-    const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
-    const trackId = `track-${Buffer.from(file.filename).toString('base64url')}`;
+    const newTracks: AudioTrackMetadata[] = [];
 
-    const metadata: AudioTrackMetadata = {
-      id: trackId,
-      title: path.basename(file.originalname, path.extname(file.originalname)),
-      artist: 'Local Upload',
-      url: `/api/audio/stream/${trackId}`,
-      sourceType: 'file',
-      format: (['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'opus'].includes(ext) ? ext : 'mp3') as any,
-      sizeBytes: file.size,
-      durationSec: 180, // Updated accurately on client after decoding
-      addedAt: Date.now(),
-    };
+    for (const file of files) {
+      const validation = validateAudioFileHeader(file.path);
+      if (!validation.valid) {
+        try {
+          fs.unlinkSync(file.path);
+        } catch {}
+        res.status(400).json({ error: 'Invalid Audio Payload', message: validation.error });
+        return;
+      }
 
-    audioStreamService.addUploadedTrack(metadata);
-    logger.info(`Uploaded file saved: ${file.originalname} -> ${metadata.id}`);
-    newTracks.push(metadata);
-  }
+      const ext = validation.format || path.extname(file.originalname).toLowerCase().replace('.', '');
+      const trackId = `track-${Buffer.from(file.filename).toString('base64url')}`;
 
-  // Broadcast updated state to all clients
-  wsServer.broadcast({
-    type: 'BROADCAST_STATE',
-    payload: audioStreamService.getBroadcastState(),
-    timestamp: syncEngine.getServerTime(),
+      const metadata: AudioTrackMetadata = {
+        id: trackId,
+        title: path.basename(file.originalname, path.extname(file.originalname)),
+        artist: 'Local Upload',
+        url: `/api/audio/stream/${trackId}`,
+        sourceType: 'file',
+        format: ext as any,
+        sizeBytes: file.size,
+        durationSec: 180, // Updated accurately on client after decoding
+        addedAt: Date.now(),
+      };
+
+      audioStreamService.addUploadedTrack(metadata);
+      logger.info(`Uploaded file saved & validated: ${file.originalname} -> ${metadata.id}`);
+      newTracks.push(metadata);
+    }
+
+    // Broadcast updated state to all clients
+    wsServer.broadcast({
+      type: 'BROADCAST_STATE',
+      payload: audioStreamService.getBroadcastState(),
+      timestamp: syncEngine.getServerTime(),
+    });
+
+    res.status(201).json(newTracks.length === 1 ? newTracks[0] : newTracks);
   });
-
-  res.status(201).json(newTracks.length === 1 ? newTracks[0] : newTracks);
 });
 
 /**

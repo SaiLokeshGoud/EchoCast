@@ -14,7 +14,12 @@
     "dev:client": "npm run dev --workspace=@echocast/client",
     "build": "npm run build --workspace=@echocast/client && npm run build --workspace=@echocast/server",
     "start": "tsx server/src/index.ts",
-    "typecheck": "npm run build --workspace=@echocast/server -- --noEmit && tsc -p client/tsconfig.json --noEmit"
+    "typecheck": "npm run build --workspace=@echocast/server -- --noEmit && tsc -p client/tsconfig.json --noEmit",
+    "test": "node server/test-comprehensive-reliability.mjs",
+    "test:sync": "node server/test-sync-engine.mjs",
+    "test:streaming": "node server/test-streaming-engine.mjs",
+    "test:devices": "node server/test-device-management.mjs",
+    "test:all": "npm test && npm run test:sync && npm run test:streaming && npm run test:devices"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
