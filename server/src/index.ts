@@ -181,6 +181,27 @@ app.get('/api/audio/state', (_req: Request, res: Response) => {
 });
 
 /**
+ * Authoritative Synchronized Radio Broadcast Timeline
+ */
+app.get('/api/audio/timeline', (_req: Request, res: Response) => {
+  res.json(audioStreamService.getBroadcastTimeline());
+});
+
+/**
+ * Sequential Audio Chunk Streaming Endpoint for Synchronized Radio Architecture
+ */
+app.get('/api/audio/chunk/:trackId/:chunkIndex', (req: Request, res: Response) => {
+  audioStreamService.handleChunkRequest(req, res, req.params.trackId, req.params.chunkIndex);
+});
+
+/**
+ * Audio Track Chunk Metadata Endpoint
+ */
+app.get('/api/audio/chunks-meta/:trackId', (req: Request, res: Response) => {
+  audioStreamService.handleChunksMetaRequest(req, res, req.params.trackId);
+});
+
+/**
  * HTTP Audio Streaming Endpoint (supports byte-ranges for chunked streaming)
  */
 app.get('/api/audio/stream/:trackId', (req: Request, res: Response) => {

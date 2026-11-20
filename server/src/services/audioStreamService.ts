@@ -4,10 +4,13 @@ import { Request, Response } from 'express';
 import {
   AudioTrackMetadata,
   BroadcastState,
+  BroadcastTimeline,
+  AudioChunkMetadata,
   PlayCommandPayload,
   PauseCommandPayload,
   SeekCommandPayload,
   AUDIO_MIME_TYPES,
+  calculateTimelinePositionSec,
 } from '@echocast/shared';
 import { config } from '../config/index';
 import { syncEngine } from './syncEngineService';
@@ -15,19 +18,34 @@ import { logger } from '../utils/logger';
 
 const audioLogger = logger.forContext('AudioStreamService');
 
+interface DecodedTrackCache {
+  trackId: string;
+  sampleRate: number;
+  channels: number;
+  durationSec: number;
+  channelData: Float32Array[];
+  totalSamples: number;
+  lastAccessed: number;
+}
+
 export class AudioStreamService {
   private tracks: Map<string, AudioTrackMetadata> = new Map();
   private playlistTrackIds: string[] = [];
   private broadcastState: BroadcastState;
+  private broadcastTimeline: BroadcastTimeline;
   private testWavBuffer: Buffer | null = null;
+  private decodedTrackCache: Map<string, DecodedTrackCache> = new Map();
+  private readonly defaultChunkDurationSec: number = 1.0;
 
   constructor() {
+    const serverNow = syncEngine.getServerTime();
+
     this.broadcastState = {
       currentTrack: null,
       playbackState: 'idle',
       isPlaying: false,
       positionSec: 0,
-      referenceServerTime: syncEngine.getServerTime(),
+      referenceServerTime: serverNow,
       volume: 1.0,
       loop: false,
       autoplay: true,
@@ -37,6 +55,20 @@ export class AudioStreamService {
       authToken: 'rtok_cast842',
       requireAuth: false,
       generation: 1,
+    };
+
+    this.broadcastTimeline = {
+      timelineId: `tl-${Date.now()}-init`,
+      generation: 1,
+      state: 'idle',
+      trackId: null,
+      track: null,
+      startPositionSec: 0,
+      broadcastStartTime: serverNow,
+      playbackRate: 1.0,
+      chunkDurationSec: this.defaultChunkDurationSec,
+      serverTime: serverNow,
+      currentPositionSec: 0,
     };
 
     // Generate built-in sync calibration metronome track
@@ -123,6 +155,8 @@ export class AudioStreamService {
         this.playlistTrackIds.push(testTrack.id);
       }
       this.broadcastState.currentTrack = testTrack;
+      this.broadcastTimeline.trackId = testTrack.id;
+      this.broadcastTimeline.track = testTrack;
       this.syncPlaylistToState();
       audioLogger.info(`Built-in sync metronome WAV generated successfully (${(this.testWavBuffer.length / 1024).toFixed(1)} KB).`);
     } catch (err) {
@@ -216,6 +250,7 @@ export class AudioStreamService {
     }
 
     this.tracks.delete(trackId);
+    this.decodedTrackCache.delete(trackId);
     this.playlistTrackIds = this.playlistTrackIds.filter((id) => id !== trackId);
     this.syncPlaylistToState();
 
@@ -227,6 +262,20 @@ export class AudioStreamService {
       this.broadcastState.isPlaying = false;
       this.broadcastState.playbackState = 'idle';
       this.broadcastState.generation += 1;
+
+      this.broadcastTimeline = {
+        timelineId: `tl-${Date.now()}-${this.broadcastState.generation}`,
+        generation: this.broadcastState.generation,
+        state: 'idle',
+        trackId: nextTrack?.id || null,
+        track: nextTrack,
+        startPositionSec: 0,
+        broadcastStartTime: syncEngine.getServerTime(),
+        playbackRate: 1.0,
+        chunkDurationSec: this.defaultChunkDurationSec,
+        serverTime: syncEngine.getServerTime(),
+        currentPositionSec: 0,
+      };
     }
 
     return true;
@@ -306,16 +355,28 @@ export class AudioStreamService {
     return null;
   }
 
+  public getBroadcastTimeline(): BroadcastTimeline {
+    const serverNow = syncEngine.getServerTime();
+    const currentPos = calculateTimelinePositionSec(this.broadcastTimeline, serverNow);
+    return {
+      ...this.broadcastTimeline,
+      serverTime: serverNow,
+      currentPositionSec: currentPos,
+    };
+  }
+
   public getBroadcastState(): BroadcastState {
+    const timeline = this.getBroadcastTimeline();
+
     if (this.broadcastState.isPlaying && this.broadcastState.currentTrack) {
-      const serverNow = syncEngine.getServerTime();
-      const elapsedSec = (serverNow - this.broadcastState.referenceServerTime) / 1000;
-      let calculatedPos = this.broadcastState.positionSec + elapsedSec;
+      let calculatedPos = timeline.currentPositionSec;
 
       if (this.broadcastState.currentTrack.durationSec > 0) {
         if (calculatedPos >= this.broadcastState.currentTrack.durationSec) {
           if (this.broadcastState.loop) {
             calculatedPos = calculatedPos % this.broadcastState.currentTrack.durationSec;
+            this.broadcastTimeline.startPositionSec = calculatedPos;
+            this.broadcastTimeline.broadcastStartTime = syncEngine.getServerTime();
           } else if (this.broadcastState.autoplay && this.broadcastState.playlist.length > 1) {
             // Autoplay next track
             const next = this.nextTrack();
@@ -327,28 +388,49 @@ export class AudioStreamService {
             calculatedPos = this.broadcastState.currentTrack.durationSec;
             this.broadcastState.isPlaying = false;
             this.broadcastState.playbackState = 'stopped';
+            this.broadcastTimeline.state = 'stopped';
+            this.broadcastTimeline.currentPositionSec = calculatedPos;
           }
         }
       }
       return {
         ...this.broadcastState,
         positionSec: Math.max(0, calculatedPos),
+        timeline,
       };
     }
 
-    return { ...this.broadcastState };
+    return {
+      ...this.broadcastState,
+      timeline,
+    };
   }
 
   public setTrack(trackId: string): AudioTrackMetadata | null {
     const track = this.tracks.get(trackId);
     if (!track) return null;
 
+    const serverNow = syncEngine.getServerTime();
     this.broadcastState.currentTrack = track;
     this.broadcastState.positionSec = 0;
     this.broadcastState.isPlaying = false;
     this.broadcastState.playbackState = 'ready';
-    this.broadcastState.referenceServerTime = syncEngine.getServerTime();
+    this.broadcastState.referenceServerTime = serverNow;
     this.broadcastState.generation += 1;
+
+    this.broadcastTimeline = {
+      timelineId: `tl-${Date.now()}-${this.broadcastState.generation}`,
+      generation: this.broadcastState.generation,
+      state: 'idle',
+      trackId: track.id,
+      track: track,
+      startPositionSec: 0,
+      broadcastStartTime: serverNow,
+      playbackRate: 1.0,
+      chunkDurationSec: this.defaultChunkDurationSec,
+      serverTime: serverNow,
+      currentPositionSec: 0,
+    };
 
     audioLogger.info(`Current track set to: ${track.title} (${track.id})`);
     return track;
@@ -367,6 +449,20 @@ export class AudioStreamService {
     this.broadcastState.referenceServerTime = scheduledServerTime;
     this.broadcastState.scheduledStartTime = scheduledServerTime;
     this.broadcastState.generation += 1;
+
+    this.broadcastTimeline = {
+      timelineId: `tl-${Date.now()}-${this.broadcastState.generation}`,
+      generation: this.broadcastState.generation,
+      state: 'playing',
+      trackId: this.broadcastState.currentTrack.id,
+      track: this.broadcastState.currentTrack,
+      startPositionSec: pos,
+      broadcastStartTime: scheduledServerTime,
+      playbackRate: 1.0,
+      chunkDurationSec: this.defaultChunkDurationSec,
+      serverTime: syncEngine.getServerTime(),
+      currentPositionSec: pos,
+    };
 
     audioLogger.info(`Playback scheduled: track=${this.broadcastState.currentTrack.title}, pos=${pos.toFixed(2)}s, delay=${effectiveDelay}ms, at serverTime=${scheduledServerTime}`);
 
@@ -391,6 +487,20 @@ export class AudioStreamService {
     this.broadcastState.referenceServerTime = scheduledServerTime;
     this.broadcastState.generation += 1;
 
+    this.broadcastTimeline = {
+      timelineId: `tl-${Date.now()}-${this.broadcastState.generation}`,
+      generation: this.broadcastState.generation,
+      state: 'paused',
+      trackId: this.broadcastState.currentTrack.id,
+      track: this.broadcastState.currentTrack,
+      startPositionSec: currentState.positionSec,
+      broadcastStartTime: scheduledServerTime,
+      playbackRate: 1.0,
+      chunkDurationSec: this.defaultChunkDurationSec,
+      serverTime: scheduledServerTime,
+      currentPositionSec: currentState.positionSec,
+    };
+
     audioLogger.info(`Playback paused at pos=${currentState.positionSec.toFixed(2)}s`);
 
     return {
@@ -411,6 +521,20 @@ export class AudioStreamService {
     this.broadcastState.scheduledStartTime = scheduledServerTime;
     this.broadcastState.generation += 1;
 
+    this.broadcastTimeline = {
+      timelineId: `tl-${Date.now()}-${this.broadcastState.generation}`,
+      generation: this.broadcastState.generation,
+      state: this.broadcastState.isPlaying ? 'playing' : 'paused',
+      trackId: this.broadcastState.currentTrack.id,
+      track: this.broadcastState.currentTrack,
+      startPositionSec: targetPositionSec,
+      broadcastStartTime: scheduledServerTime,
+      playbackRate: 1.0,
+      chunkDurationSec: this.defaultChunkDurationSec,
+      serverTime: syncEngine.getServerTime(),
+      currentPositionSec: targetPositionSec,
+    };
+
     audioLogger.info(`Seek scheduled: target=${targetPositionSec.toFixed(2)}s, delay=${effectiveDelay}ms, at serverTime=${scheduledServerTime}`);
 
     return {
@@ -428,11 +552,262 @@ export class AudioStreamService {
     this.broadcastState.positionSec = 0;
     this.broadcastState.referenceServerTime = syncEngine.getServerTime();
     this.broadcastState.generation += 1;
+
+    this.broadcastTimeline = {
+      timelineId: `tl-${Date.now()}-${this.broadcastState.generation}`,
+      generation: this.broadcastState.generation,
+      state: 'stopped',
+      trackId: this.broadcastState.currentTrack?.id || null,
+      track: this.broadcastState.currentTrack || null,
+      startPositionSec: 0,
+      broadcastStartTime: syncEngine.getServerTime(),
+      playbackRate: 1.0,
+      chunkDurationSec: this.defaultChunkDurationSec,
+      serverTime: syncEngine.getServerTime(),
+      currentPositionSec: 0,
+    };
+
     return this.broadcastState.generation;
   }
 
   public setVolume(volume: number) {
     this.broadcastState.volume = Math.max(0, Math.min(1, volume));
+  }
+
+  /**
+   * Decode track into raw Float32Array PCM channel data with in-memory LRU caching
+   */
+  public async getDecodedTrack(trackId: string): Promise<DecodedTrackCache | null> {
+    if (this.decodedTrackCache.has(trackId)) {
+      const cached = this.decodedTrackCache.get(trackId)!;
+      cached.lastAccessed = Date.now();
+      return cached;
+    }
+
+    // 1. Built-in Test Metronome Track (mono 44100Hz 16-bit PCM WAV in memory)
+    if (trackId === 'test-metronome-sync') {
+      if (!this.testWavBuffer) return null;
+      try {
+        const sampleRate = 44100;
+        const channels = 1;
+        const pcmByteLength = this.testWavBuffer.length - 44;
+        const numSamples = Math.floor(pcmByteLength / 2);
+        const floatData = new Float32Array(numSamples);
+
+        for (let i = 0; i < numSamples; i++) {
+          const int16Val = this.testWavBuffer.readInt16LE(44 + i * 2);
+          floatData[i] = int16Val / 32768.0;
+        }
+
+        const entry: DecodedTrackCache = {
+          trackId,
+          sampleRate,
+          channels,
+          durationSec: numSamples / sampleRate,
+          channelData: [floatData],
+          totalSamples: numSamples,
+          lastAccessed: Date.now(),
+        };
+
+        this.decodedTrackCache.set(trackId, entry);
+        return entry;
+      } catch (err) {
+        audioLogger.error('Failed to decode built-in test WAV buffer', err);
+        return null;
+      }
+    }
+
+    // 2. Uploaded Track from Disk
+    const track = this.tracks.get(trackId);
+    if (!track) return null;
+
+    try {
+      const files = fs.readdirSync(config.uploadDir);
+      const targetFile = files.find((f) => `track-${Buffer.from(f).toString('base64url')}` === trackId);
+      if (!targetFile) return null;
+
+      const filePath = path.join(config.uploadDir, targetFile);
+      if (!fs.existsSync(filePath)) return null;
+
+      const fileBuffer = fs.readFileSync(filePath);
+
+      // Dynamically import @audio/decode
+      const decodeMod = (await import('@audio/decode')).default || (await import('@audio/decode'));
+      const decodedAudio = await decodeMod(fileBuffer);
+
+      if (!decodedAudio || !decodedAudio.channelData || decodedAudio.channelData.length === 0) {
+        audioLogger.error(`Audio decoder returned empty channel data for ${trackId}`);
+        return null;
+      }
+
+      const sampleRate = decodedAudio.sampleRate || 44100;
+      const channels = decodedAudio.channelData.length;
+      const totalSamples = decodedAudio.channelData[0].length;
+      const durationSec = totalSamples / sampleRate;
+
+      // Update track duration if changed
+      if (Math.abs(track.durationSec - durationSec) > 0.5) {
+        track.durationSec = durationSec;
+        track.sampleRate = sampleRate;
+        track.channels = channels;
+      }
+
+      const entry: DecodedTrackCache = {
+        trackId,
+        sampleRate,
+        channels,
+        durationSec,
+        channelData: decodedAudio.channelData,
+        totalSamples,
+        lastAccessed: Date.now(),
+      };
+
+      // LRU Eviction: maintain max 5 decoded tracks in memory
+      if (this.decodedTrackCache.size >= 5) {
+        let oldestKey: string | null = null;
+        let oldestTime = Infinity;
+        for (const [k, v] of this.decodedTrackCache.entries()) {
+          if (v.lastAccessed < oldestTime) {
+            oldestTime = v.lastAccessed;
+            oldestKey = k;
+          }
+        }
+        if (oldestKey) this.decodedTrackCache.delete(oldestKey);
+      }
+
+      this.decodedTrackCache.set(trackId, entry);
+      audioLogger.info(`Decoded track ${track.title} (${durationSec.toFixed(1)}s, ${sampleRate}Hz, ${channels}ch)`);
+      return entry;
+    } catch (err) {
+      audioLogger.error(`Failed to decode track ${trackId} from disk`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Slices a track into a sequential, self-contained 16-bit PCM WAV chunk
+   */
+  public async getAudioChunk(
+    trackId: string,
+    chunkIndex: number,
+    chunkDurationSec = this.defaultChunkDurationSec
+  ): Promise<{ buffer: Buffer; meta: AudioChunkMetadata } | null> {
+    const decoded = await this.getDecodedTrack(trackId);
+    if (!decoded) return null;
+
+    const totalChunks = Math.max(1, Math.ceil(decoded.durationSec / chunkDurationSec));
+    if (chunkIndex < 0 || chunkIndex >= totalChunks) {
+      return null;
+    }
+
+    const startSec = chunkIndex * chunkDurationSec;
+    const endSec = Math.min(decoded.durationSec, (chunkIndex + 1) * chunkDurationSec);
+    const durationSec = Math.max(0, endSec - startSec);
+
+    const startSample = Math.floor(startSec * decoded.sampleRate);
+    const endSample = Math.min(decoded.totalSamples, Math.floor(endSec * decoded.sampleRate));
+    const numSamples = Math.max(0, endSample - startSample);
+
+    const channels = decoded.channels;
+    const sampleRate = decoded.sampleRate;
+    const pcmBytes = numSamples * channels * 2;
+
+    // Standard 44-byte WAV header
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + pcmBytes, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20); // Linear PCM
+    header.writeUInt16LE(channels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(sampleRate * channels * 2, 28);
+    header.writeUInt16LE(channels * 2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write('data', 36);
+    header.writeUInt32LE(pcmBytes, 40);
+
+    const pcmBuf = Buffer.alloc(pcmBytes);
+    let pcmOffset = 0;
+
+    for (let i = 0; i < numSamples; i++) {
+      for (let ch = 0; ch < channels; ch++) {
+        const floatVal = decoded.channelData[ch][startSample + i] || 0;
+        const clamped = Math.max(-1, Math.min(1, floatVal));
+        const val = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+        pcmBuf.writeInt16LE(Math.floor(val), pcmOffset);
+        pcmOffset += 2;
+      }
+    }
+
+    const chunkBuffer = Buffer.concat([header, pcmBuf]);
+
+    const meta: AudioChunkMetadata = {
+      trackId,
+      chunkIndex,
+      startSec,
+      durationSec,
+      totalChunks,
+      chunkDurationSec,
+      url: `/api/audio/chunk/${trackId}/${chunkIndex}`,
+      sizeBytes: chunkBuffer.length,
+    };
+
+    return { buffer: chunkBuffer, meta };
+  }
+
+  /**
+   * Express HTTP handler for sequential chunk requests
+   */
+  public async handleChunkRequest(req: Request, res: Response, trackId: string, chunkIndexStr: string) {
+    const chunkIndex = parseInt(chunkIndexStr, 10);
+    if (isNaN(chunkIndex)) {
+      res.status(400).json({ error: 'Invalid chunk index' });
+      return;
+    }
+
+    const chunk = await this.getAudioChunk(trackId, chunkIndex);
+    if (!chunk) {
+      res.status(404).json({ error: 'Chunk not found or index out of range' });
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'audio/wav',
+      'Content-Length': chunk.buffer.length,
+      'X-Track-Id': trackId,
+      'X-Chunk-Index': chunkIndex.toString(),
+      'X-Chunk-Start-Sec': chunk.meta.startSec.toFixed(3),
+      'X-Chunk-Duration-Sec': chunk.meta.durationSec.toFixed(3),
+      'X-Total-Chunks': chunk.meta.totalChunks.toString(),
+      'Cache-Control': 'public, max-age=3600',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    res.end(chunk.buffer);
+  }
+
+  /**
+   * Express HTTP handler for track chunk metadata
+   */
+  public async handleChunksMetaRequest(req: Request, res: Response, trackId: string) {
+    const decoded = await this.getDecodedTrack(trackId);
+    if (!decoded) {
+      res.status(404).json({ error: 'Track not found or could not be decoded' });
+      return;
+    }
+
+    const totalChunks = Math.max(1, Math.ceil(decoded.durationSec / this.defaultChunkDurationSec));
+
+    res.json({
+      trackId,
+      durationSec: decoded.durationSec,
+      chunkDurationSec: this.defaultChunkDurationSec,
+      totalChunks,
+      sampleRate: decoded.sampleRate,
+      channels: decoded.channels,
+    });
   }
 
   /**

@@ -3,6 +3,7 @@ import {
   AudioTrackMetadata,
   DeviceAudioOutput,
   SyncMetrics,
+  RadioDiagnosticsInfo,
   formatAudioTime,
 } from '@echocast/shared';
 import {
@@ -59,6 +60,7 @@ interface Props {
   syncMetrics: SyncMetrics;
   syncErrorMs?: number;
   driftCorrectionInfo?: { active: boolean; rate: number };
+  radioDiagnostics?: RadioDiagnosticsInfo;
   lastErrorMessage?: string | null;
   onClearError?: () => void;
   isAudioUnlocked: boolean;
@@ -95,6 +97,7 @@ export const ReceiverDashboard: React.FC<Props> = ({
   syncMetrics,
   syncErrorMs,
   driftCorrectionInfo,
+  radioDiagnostics,
   lastErrorMessage,
   onClearError,
   isAudioUnlocked,
@@ -568,6 +571,94 @@ export const ReceiverDashboard: React.FC<Props> = ({
           </div>
         </div>
       )}
+
+      {/* Synchronized Radio Broadcast Diagnostics Panel */}
+      <div className="bg-charcoal-900 border border-charcoal-750 rounded-2xl p-4 shadow-md space-y-3">
+        <div className="flex items-center justify-between border-b border-charcoal-800 pb-2.5">
+          <div className="flex items-center gap-2">
+            <Radio className="w-4 h-4 text-brand-400" />
+            <span className="text-xs font-bold text-white tracking-wide uppercase">
+              Synchronized Radio Broadcast Diagnostics
+            </span>
+          </div>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+            radioDiagnostics?.isPhaseLocked
+              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+              : 'bg-cyanAccent-500/20 text-cyanAccent-300 border border-cyanAccent-500/30'
+          }`}>
+            {radioDiagnostics?.isPhaseLocked ? '● PHASE LOCKED' : '○ PLL TRACKING'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+          {/* Broadcast Timeline Position */}
+          <div className="p-2.5 rounded-xl bg-charcoal-850 border border-charcoal-800 space-y-1">
+            <span className="text-[10px] font-semibold text-slate-400 block uppercase">Broadcast Timeline</span>
+            <span className="font-mono font-bold text-white text-sm">
+              {formatAudioTime(radioDiagnostics?.broadcastPositionSec || 0)}
+              <span className="text-[10px] text-slate-400 font-normal ml-1">
+                .{Math.floor(((radioDiagnostics?.broadcastPositionSec || 0) % 1) * 1000).toString().padStart(3, '0')}s
+              </span>
+            </span>
+          </div>
+
+          {/* Receiver Playback Position */}
+          <div className="p-2.5 rounded-xl bg-charcoal-850 border border-charcoal-800 space-y-1">
+            <span className="text-[10px] font-semibold text-slate-400 block uppercase">Receiver Local</span>
+            <span className="font-mono font-bold text-white text-sm">
+              {formatAudioTime(radioDiagnostics?.receiverPositionSec || 0)}
+              <span className="text-[10px] text-slate-400 font-normal ml-1">
+                .{Math.floor(((radioDiagnostics?.receiverPositionSec || 0) % 1) * 1000).toString().padStart(3, '0')}s
+              </span>
+            </span>
+          </div>
+
+          {/* Real-time Sync Error (ms) */}
+          <div className="p-2.5 rounded-xl bg-charcoal-850 border border-charcoal-800 space-y-1">
+            <span className="text-[10px] font-semibold text-slate-400 block uppercase">Phase Offset / Error</span>
+            <span className={`font-mono font-bold text-sm ${
+              Math.abs(radioDiagnostics?.syncErrorMs || 0) <= 15
+                ? 'text-emerald-400'
+                : Math.abs(radioDiagnostics?.syncErrorMs || 0) <= 60
+                ? 'text-cyanAccent-400'
+                : 'text-amber-400'
+            }`}>
+              {(radioDiagnostics?.syncErrorMs || 0) > 0 ? '+' : ''}
+              {radioDiagnostics?.syncErrorMs || 0} ms
+            </span>
+          </div>
+
+          {/* Jitter Buffer Duration & Chunks */}
+          <div className="p-2.5 rounded-xl bg-charcoal-850 border border-charcoal-800 space-y-1">
+            <span className="text-[10px] font-semibold text-slate-400 block uppercase">Jitter Buffer</span>
+            <span className="font-mono font-bold text-brand-400 text-sm">
+              {(radioDiagnostics?.jitterBufferDurationSec || 0).toFixed(1)}s
+              <span className="text-[10px] text-slate-400 font-normal ml-1">
+                ({radioDiagnostics?.jitterBufferChunks || 0} chunks)
+              </span>
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 pt-1 text-[11px] font-mono border-t border-charcoal-800/60">
+          <div className="text-slate-400">
+            <span className="text-slate-500 block text-[9px] uppercase">Drift Rate Factor</span>
+            <span className="font-bold text-slate-200">{(radioDiagnostics?.driftRate || 1.0).toFixed(4)}x</span>
+          </div>
+          <div className="text-slate-400">
+            <span className="text-slate-500 block text-[9px] uppercase">Buffer Underruns</span>
+            <span className={`font-bold ${
+              (radioDiagnostics?.underrunCount || 0) > 0 ? 'text-amber-400' : 'text-slate-200'
+            }`}>
+              {radioDiagnostics?.underrunCount || 0}
+            </span>
+          </div>
+          <div className="text-slate-400">
+            <span className="text-slate-500 block text-[9px] uppercase">Network RTT</span>
+            <span className="font-bold text-slate-200">{(radioDiagnostics?.rttMs || syncMetrics.roundTripTimeMs || 0).toFixed(1)} ms</span>
+          </div>
+        </div>
+      </div>
 
       {/* Synchronized Playback Display & Album Artwork */}
       <div className="bg-charcoal-900 border border-charcoal-750 rounded-2xl p-6 shadow-xl space-y-6">

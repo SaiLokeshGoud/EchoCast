@@ -24,6 +24,27 @@ export function formatAudioTime(seconds: number): string {
 }
 
 /**
+ * Calculate the authoritative current position for a broadcast timeline
+ */
+export function calculateTimelinePositionSec(
+  timeline: import('./types/audio').BroadcastTimeline,
+  currentServerTime: number
+): number {
+  if (timeline.state === 'playing') {
+    const elapsedSec = Math.max(0, (currentServerTime - timeline.broadcastStartTime) / 1000);
+    const pos = timeline.startPositionSec + elapsedSec * (timeline.playbackRate || 1.0);
+    if (timeline.track && timeline.track.durationSec > 0 && pos >= timeline.track.durationSec) {
+      return timeline.track.durationSec;
+    }
+    return Math.max(0, pos);
+  }
+  if (timeline.state === 'paused') {
+    return Math.max(0, timeline.startPositionSec);
+  }
+  return 0;
+}
+
+/**
  * Helper to determine sync quality classification
  */
 export function evaluateSyncQuality(offsetMs: number, rttMs: number, jitterMs: number = 0): 'excellent' | 'good' | 'fair' | 'poor' {

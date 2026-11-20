@@ -20,7 +20,8 @@
     "test:streaming": "node server/test-streaming-engine.mjs",
     "test:devices": "node server/test-device-management.mjs",
     "test:safari": "node server/test-ios-safari-stability.mjs",
-    "test:all": "npm test && npm run test:sync && npm run test:streaming && npm run test:devices && npm run test:safari"
+    "test:radio": "node server/test-radio-sync.mjs",
+    "test:all": "npm test && npm run test:sync && npm run test:streaming && npm run test:devices && npm run test:safari && npm run test:radio"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

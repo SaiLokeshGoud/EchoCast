@@ -5,6 +5,7 @@ import {
   DeviceAudioOutput,
   AudioTrackMetadata,
   BroadcastState,
+  BroadcastTimeline,
   PlayCommandPayload,
   PauseCommandPayload,
   SeekCommandPayload,
@@ -125,6 +126,7 @@ export function App() {
     lastErrorMessage,
     syncErrorMs,
     driftCorrectionInfo,
+    radioDiagnostics,
     isUnlocked,
     unlockAudio,
     setVolume,
@@ -252,12 +254,20 @@ export function App() {
           webAudioEngine.loadTrack(state.currentTrack);
         }
       }
-      if (state.isPlaying && state.scheduledStartTime) {
-        // If already playing this track in sync, schedulePlay will smoothly preserve playback
+      if (state.timeline) {
+        webAudioEngine.updateTimeline(state.timeline);
+      } else if (state.isPlaying && state.scheduledStartTime) {
+        // Fallback for legacy timeline
         webAudioEngine.schedulePlay(state.scheduledStartTime, state.positionSec, state.generation);
       } else if (!state.isPlaying && webAudioEngine.isPlaying()) {
         webAudioEngine.pause();
       }
+    });
+
+    // Listen to authoritative Synchronized Radio Timeline updates
+    const unbindTimeline = wsClient.on<BroadcastTimeline>('BROADCAST_TIMELINE_UPDATE', (timeline) => {
+      webAudioEngine.updateTimeline(timeline);
+      setIsPlaying(timeline.state === 'playing');
     });
 
     // Listen to network status and IP changes
@@ -353,6 +363,7 @@ export function App() {
     return () => {
       unbindStatus();
       unbindBroadcastState();
+      unbindTimeline();
       unbindTrack();
       unbindPlay();
       unbindPause();
@@ -745,6 +756,7 @@ export function App() {
             syncMetrics={syncMetrics}
             syncErrorMs={syncErrorMs}
             driftCorrectionInfo={driftCorrectionInfo}
+            radioDiagnostics={radioDiagnostics}
             lastErrorMessage={lastErrorMessage}
             onClearError={clearError}
             isAudioUnlocked={isUnlocked}

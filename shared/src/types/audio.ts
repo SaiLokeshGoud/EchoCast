@@ -41,6 +41,44 @@ export interface BroadcastState {
   authToken?: string;
   requireAuth?: boolean;
   generation: number;            // Monotonically increasing sequence to ignore stale actions
+  timeline?: BroadcastTimeline;  // Authoritative shared broadcast timeline
+}
+
+export interface BroadcastTimeline {
+  timelineId: string;
+  generation: number;
+  state: 'idle' | 'playing' | 'paused' | 'stopped';
+  trackId: string | null;
+  track: AudioTrackMetadata | null;
+  startPositionSec: number;
+  broadcastStartTime: number; // Server clock timestamp (ms) when playback started/resumed
+  playbackRate: number;        // Authoritative broadcast playback speed (e.g. 1.0)
+  chunkDurationSec: number;    // Standard audio slice duration (e.g. 1.0 second)
+  serverTime: number;          // Timestamp when timeline was captured
+  currentPositionSec: number;  // Authoritative live position in track (seconds)
+}
+
+export interface AudioChunkMetadata {
+  trackId: string;
+  chunkIndex: number;
+  startSec: number;
+  durationSec: number;
+  totalChunks: number;
+  chunkDurationSec: number;
+  url: string;
+  sizeBytes?: number;
+}
+
+export interface RadioDiagnosticsInfo {
+  broadcastPositionSec: number;
+  receiverPositionSec: number;
+  syncErrorMs: number;
+  jitterBufferDurationSec: number;
+  jitterBufferChunks: number;
+  underrunCount: number;
+  driftRate: number;
+  isPhaseLocked: boolean;
+  rttMs: number;
 }
 
 export interface PlayCommandPayload {

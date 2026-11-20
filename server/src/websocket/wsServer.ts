@@ -155,6 +155,7 @@ export class EchoCastWsServer {
     };
 
     const senderOnlyTypes = new Set([
+      'BROADCAST_TIMELINE_UPDATE',
       'BROADCAST_TRACK_UPDATE',
       'BROADCAST_PLAY',
       'BROADCAST_PAUSE',
@@ -290,6 +291,13 @@ export class EchoCastWsServer {
           timestamp: serverTimestamp,
         });
 
+        // Send current authoritative broadcast timeline
+        this.send(ws, {
+          type: 'BROADCAST_TIMELINE_UPDATE',
+          payload: audioStreamService.getBroadcastTimeline(),
+          timestamp: serverTimestamp,
+        });
+
         // Send current device list
         this.send(ws, {
           type: 'DEVICE_LIST',
@@ -364,6 +372,11 @@ export class EchoCastWsServer {
               payload: audioStreamService.getBroadcastState(),
               timestamp: serverTimestamp,
             });
+            this.broadcast({
+              type: 'BROADCAST_TIMELINE_UPDATE',
+              payload: audioStreamService.getBroadcastTimeline(),
+              timestamp: serverTimestamp,
+            });
           }
         }
         break;
@@ -384,6 +397,11 @@ export class EchoCastWsServer {
             payload: audioStreamService.getBroadcastState(),
             timestamp: serverTimestamp,
           });
+          this.broadcast({
+            type: 'BROADCAST_TIMELINE_UPDATE',
+            payload: audioStreamService.getBroadcastTimeline(),
+            timestamp: serverTimestamp,
+          });
         }
         break;
       }
@@ -399,6 +417,11 @@ export class EchoCastWsServer {
           this.broadcast({
             type: 'BROADCAST_STATE',
             payload: audioStreamService.getBroadcastState(),
+            timestamp: serverTimestamp,
+          });
+          this.broadcast({
+            type: 'BROADCAST_TIMELINE_UPDATE',
+            payload: audioStreamService.getBroadcastTimeline(),
             timestamp: serverTimestamp,
           });
         }
@@ -419,6 +442,11 @@ export class EchoCastWsServer {
             payload: audioStreamService.getBroadcastState(),
             timestamp: serverTimestamp,
           });
+          this.broadcast({
+            type: 'BROADCAST_TIMELINE_UPDATE',
+            payload: audioStreamService.getBroadcastTimeline(),
+            timestamp: serverTimestamp,
+          });
         }
         break;
       }
@@ -431,8 +459,13 @@ export class EchoCastWsServer {
           timestamp: serverTimestamp,
         });
         this.broadcast({
-          type: 'BROADCAST_STATE',
-          payload: audioStreamService.getBroadcastState(),
+            type: 'BROADCAST_STATE',
+            payload: audioStreamService.getBroadcastState(),
+            timestamp: serverTimestamp,
+          });
+        this.broadcast({
+          type: 'BROADCAST_TIMELINE_UPDATE',
+          payload: audioStreamService.getBroadcastTimeline(),
           timestamp: serverTimestamp,
         });
         break;

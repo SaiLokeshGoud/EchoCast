@@ -1,4 +1,12 @@
-import { AudioTrackMetadata, DeviceAudioOutput, AudioFormat, AUDIO_MIME_TYPES } from '@echocast/shared';
+import {
+  AudioTrackMetadata,
+  DeviceAudioOutput,
+  AudioFormat,
+  AUDIO_MIME_TYPES,
+  BroadcastTimeline,
+  RadioDiagnosticsInfo,
+  calculateTimelinePositionSec,
+} from '@echocast/shared';
 import { timeSync } from '../sync/timeSync';
 
 export type AudioEngineState = 'unlocked' | 'locked' | 'buffering' | 'ready' | 'playing' | 'paused' | 'error';
@@ -8,6 +16,14 @@ export interface AudioBufferCacheEntry {
   buffer: AudioBuffer;
   lastAccessed: number;
   sizeBytes: number;
+}
+
+interface DecodedRadioChunk {
+  index: number;
+  startSec: number;
+  durationSec: number;
+  buffer: AudioBuffer;
+  generation: number;
 }
 
 export class WebAudioEngine {
@@ -42,6 +58,18 @@ export class WebAudioEngine {
   private driftMonitorTimer: any = null;
   private listeners: Set<AudioEngineListener> = new Set();
   private endedListeners: Set<() => void> = new Set();
+
+  // Synchronized Radio Broadcast Timeline & Adaptive Jitter Buffer
+  private timeline: BroadcastTimeline | null = null;
+  private jitterBuffer: Map<number, DecodedRadioChunk> = new Map();
+  private scheduledChunkSources: Map<number, AudioBufferSourceNode> = new Map();
+  private inFlightChunkFetches: Set<number> = new Set();
+  private nextScheduledCtxTime: number = 0;
+  private radioSchedulerTimer: any = null;
+  private underrunCount: number = 0;
+  private isPhaseLocked: boolean = false;
+  private chunkDurationSec: number = 1.0;
+  private isRadioChunkStreaming: boolean = false;
 
   // Mobile Audio Session Keep-Alive & Screen WakeLock
   private keepAliveOsc: OscillatorNode | null = null;
@@ -551,6 +579,293 @@ export class WebAudioEngine {
    * Avoids unnecessary playback restarts when already in sync.
    * Includes dynamic catch-up recovery when buffering finishes after scheduled time.
    */
+  /**
+   * Update or align with authoritative Broadcast Timeline
+   */
+  public async updateTimeline(timeline: BroadcastTimeline) {
+    if (timeline.generation < this.currentGeneration) {
+      return; // Ignore stale timeline
+    }
+
+    const prevGeneration = this.currentGeneration;
+    const prevTrackId = this.timeline?.trackId;
+    this.timeline = timeline;
+    this.currentGeneration = timeline.generation;
+
+    if (timeline.track) {
+      this.currentTrack = timeline.track;
+    }
+
+    // If generation changed or track changed, flush queued chunks from previous generation
+    if (timeline.generation !== prevGeneration || timeline.trackId !== prevTrackId) {
+      this.flushScheduledSources();
+      this.jitterBuffer.clear();
+      this.inFlightChunkFetches.clear();
+      this.nextScheduledCtxTime = 0;
+    }
+
+    if (timeline.state === 'playing') {
+      if (this.isUnlocked()) {
+        await this.startRadioBroadcastPlayback(timeline);
+      }
+    } else if (timeline.state === 'paused') {
+      this.pause();
+    } else if (timeline.state === 'stopped') {
+      this.stop();
+    }
+  }
+
+  public getBroadcastTimeline(): BroadcastTimeline | null {
+    return this.timeline;
+  }
+
+  public isRadioStreaming(): boolean {
+    return this.isRadioChunkStreaming;
+  }
+
+  /**
+   * Start or resume continuous synchronized radio playback from broadcast timeline
+   */
+  private async startRadioBroadcastPlayback(timeline: BroadcastTimeline) {
+    const ctx = this.getAudioContext();
+    if (ctx.state !== 'running') {
+      await this.unlock();
+    }
+
+    const currentServerTime = timeSync.getServerTime();
+    const livePos = calculateTimelinePositionSec(timeline, currentServerTime);
+    const startChunkIndex = Math.max(0, Math.floor(livePos / this.chunkDurationSec));
+
+    this.state = 'playing';
+    this.scheduledServerStartTime = timeline.broadcastStartTime;
+    this.scheduledStartPositionSec = timeline.startPositionSec;
+    this.isRadioChunkStreaming = true;
+
+    // Start background scheduler and drift monitor loops
+    this.startRadioScheduler();
+    this.startDriftMonitor();
+    this.requestWakeLock();
+    this.updateMediaSession(this.currentTrack, true);
+    this.notify();
+
+    // Immediately fetch starting chunks to prime the jitter buffer
+    const trackId = timeline.trackId || this.currentTrack?.id || '';
+    if (trackId) {
+      this.fetchChunk(trackId, startChunkIndex, timeline.generation);
+      this.fetchChunk(trackId, startChunkIndex + 1, timeline.generation);
+      this.fetchChunk(trackId, startChunkIndex + 2, timeline.generation);
+    }
+    this.processJitterQueue();
+  }
+
+  /**
+   * Adaptive Receiver Jitter Buffer processing and Web Audio gapless chunk scheduler
+   */
+  private processJitterQueue() {
+    if (!this.timeline || this.timeline.state !== 'playing' || !this.ctx) return;
+
+    const currentServerTime = timeSync.getServerTime();
+    const livePos = calculateTimelinePositionSec(this.timeline, currentServerTime);
+    const currentChunkIndex = Math.max(0, Math.floor(livePos / this.chunkDurationSec));
+
+    // Keep audio scheduled 2 seconds ahead on the AudioContext timeline
+    const scheduleAheadLimit = this.ctx.currentTime + 2.0;
+
+    // Prune chunks in jitter buffer that are completely in the past
+    for (const [idx] of this.jitterBuffer.entries()) {
+      if (idx < currentChunkIndex - 1) {
+        this.jitterBuffer.delete(idx);
+      }
+    }
+
+    let chunkToSchedule = currentChunkIndex;
+    if (this.nextScheduledCtxTime > this.ctx.currentTime) {
+      const scheduledAheadSec = this.nextScheduledCtxTime - this.ctx.currentTime;
+      chunkToSchedule = Math.floor((livePos + scheduledAheadSec) / this.chunkDurationSec);
+    }
+
+    while (this.nextScheduledCtxTime < scheduleAheadLimit) {
+      const chunk = this.jitterBuffer.get(chunkToSchedule);
+      const trackId = this.timeline.trackId || this.currentTrack?.id;
+
+      if (!chunk) {
+        // Chunk not buffered yet: request it
+        if (trackId && !this.inFlightChunkFetches.has(chunkToSchedule)) {
+          this.fetchChunk(trackId, chunkToSchedule, this.timeline.generation);
+        }
+
+        // Check for buffer underrun
+        if (this.nextScheduledCtxTime > 0 && this.nextScheduledCtxTime <= this.ctx.currentTime + 0.05) {
+          if (this.state === 'playing') {
+            this.state = 'buffering';
+            this.underrunCount++;
+            this.notify();
+          }
+        }
+        break;
+      }
+
+      // Schedule contiguous chunk onto Web Audio graph
+      if (!this.scheduledChunkSources.has(chunkToSchedule)) {
+        const chunkStartServerTime = this.timeline.broadcastStartTime + Math.round(chunk.startSec * 1000);
+        const timeDeltaMs = chunkStartServerTime - currentServerTime;
+        const effectiveLatSec = timeSync.getMetrics().effectiveTotalLatencyMs / 1000;
+        const calcTargetCtxTime = this.ctx.currentTime + (timeDeltaMs / 1000) - effectiveLatSec;
+
+        let scheduledStart: number;
+        let offsetIntoChunk: number = 0;
+
+        if (this.nextScheduledCtxTime <= this.ctx.currentTime) {
+          // First chunk starting
+          if (calcTargetCtxTime < this.ctx.currentTime) {
+            offsetIntoChunk = Math.max(0, this.ctx.currentTime - calcTargetCtxTime);
+            if (offsetIntoChunk >= chunk.durationSec) {
+              // Entire chunk was in the past, move to next
+              chunkToSchedule++;
+              continue;
+            }
+            scheduledStart = this.ctx.currentTime;
+          } else {
+            scheduledStart = calcTargetCtxTime;
+            offsetIntoChunk = 0;
+          }
+        } else {
+          // Subsequent chained chunk: schedule seamlessly at nextScheduledCtxTime
+          scheduledStart = Math.max(this.ctx.currentTime, this.nextScheduledCtxTime);
+          offsetIntoChunk = 0;
+        }
+
+        const source = this.ctx.createBufferSource();
+        source.buffer = chunk.buffer;
+        source.playbackRate.value = this.driftCorrectionRate;
+        source.connect(this.masterGain!);
+
+        const capturedChunkIdx = chunkToSchedule;
+        source.onended = () => {
+          this.scheduledChunkSources.delete(capturedChunkIdx);
+          this.jitterBuffer.delete(capturedChunkIdx);
+        };
+
+        const effectiveDuration = (chunk.durationSec - offsetIntoChunk) / this.driftCorrectionRate;
+        source.start(scheduledStart, offsetIntoChunk);
+        this.scheduledChunkSources.set(chunkToSchedule, source);
+        this.nextScheduledCtxTime = scheduledStart + effectiveDuration;
+
+        if (this.state === 'buffering') {
+          this.state = 'playing';
+          this.notify();
+        }
+      }
+
+      chunkToSchedule++;
+    }
+
+    // Pre-fetch upcoming chunks to maintain 2-3 chunks buffer
+    const activeTrackId = this.timeline.trackId || this.currentTrack?.id;
+    if (activeTrackId) {
+      for (let i = 0; i < 3; i++) {
+        const aheadIdx = currentChunkIndex + i;
+        if (!this.jitterBuffer.has(aheadIdx) && !this.inFlightChunkFetches.has(aheadIdx)) {
+          this.fetchChunk(activeTrackId, aheadIdx, this.timeline.generation);
+        }
+      }
+    }
+  }
+
+  /**
+   * Fetch and decode a 1-second WAV chunk into AudioBuffer
+   */
+  private async fetchChunk(trackId: string, chunkIndex: number, generation: number) {
+    if (this.inFlightChunkFetches.has(chunkIndex) || this.jitterBuffer.has(chunkIndex)) {
+      return;
+    }
+    if (chunkIndex < 0 || !trackId) return;
+
+    this.inFlightChunkFetches.add(chunkIndex);
+
+    try {
+      const res = await fetch(`/api/audio/chunk/${encodeURIComponent(trackId)}/${chunkIndex}`);
+      if (!res.ok) {
+        this.inFlightChunkFetches.delete(chunkIndex);
+        return;
+      }
+
+      const arrayBuffer = await res.arrayBuffer();
+
+      if (generation !== this.currentGeneration) {
+        this.inFlightChunkFetches.delete(chunkIndex);
+        return;
+      }
+
+      const ctx = this.getAudioContext();
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+
+      const chunkEntry: DecodedRadioChunk = {
+        index: chunkIndex,
+        startSec: chunkIndex * this.chunkDurationSec,
+        durationSec: audioBuffer.duration,
+        buffer: audioBuffer,
+        generation,
+      };
+
+      this.jitterBuffer.set(chunkIndex, chunkEntry);
+      this.inFlightChunkFetches.delete(chunkIndex);
+      this.notify();
+
+      this.processJitterQueue();
+    } catch {
+      this.inFlightChunkFetches.delete(chunkIndex);
+    }
+  }
+
+  private flushScheduledSources() {
+    for (const [, source] of this.scheduledChunkSources.entries()) {
+      try {
+        source.onended = null;
+        source.stop();
+        source.disconnect();
+      } catch {}
+    }
+    this.scheduledChunkSources.clear();
+    this.nextScheduledCtxTime = 0;
+  }
+
+  private resyncToTimeline() {
+    if (!this.timeline || this.timeline.state !== 'playing') return;
+
+    this.flushScheduledSources();
+    this.jitterBuffer.clear();
+    this.inFlightChunkFetches.clear();
+    this.nextScheduledCtxTime = 0;
+
+    const currentServerTime = timeSync.getServerTime();
+    const livePos = calculateTimelinePositionSec(this.timeline, currentServerTime);
+    const startChunkIndex = Math.max(0, Math.floor(livePos / this.chunkDurationSec));
+
+    const trackId = this.timeline.trackId || this.currentTrack?.id || '';
+    if (trackId) {
+      this.fetchChunk(trackId, startChunkIndex, this.timeline.generation);
+      this.fetchChunk(trackId, startChunkIndex + 1, this.timeline.generation);
+    }
+  }
+
+  private startRadioScheduler() {
+    if (this.radioSchedulerTimer) clearInterval(this.radioSchedulerTimer);
+    this.radioSchedulerTimer = setInterval(() => {
+      this.processJitterQueue();
+    }, 80);
+  }
+
+  private stopRadioScheduler() {
+    if (this.radioSchedulerTimer) {
+      clearInterval(this.radioSchedulerTimer);
+      this.radioSchedulerTimer = null;
+    }
+  }
+
+  /**
+   * Synchronized Playback command handler
+   */
   public async schedulePlay(scheduledServerTime: number, startPositionSec: number = 0, generation: number = 0) {
     if (generation < this.currentGeneration) {
       return; // Ignore stale command
@@ -558,13 +873,8 @@ export class WebAudioEngine {
 
     const currentServerTime = timeSync.getServerTime();
 
-    // Avoid unnecessary playback restarts:
-    // If we are already playing the same track, do not restart audio!
-    if (
-      this.state === 'playing' &&
-      this.currentSourceNode &&
-      this.currentTrack
-    ) {
+    // If already playing in sync, do not restart
+    if (this.state === 'playing' && this.currentTrack) {
       const currentPos = this.getCurrentPosition();
       let expectedPos = startPositionSec;
       if (scheduledServerTime > 0) {
@@ -573,13 +883,10 @@ export class WebAudioEngine {
       }
       const driftSec = Math.abs(currentPos - expectedPos);
 
-      // If drift is under 150ms, receiver is already synchronized in phase!
-      // Do NOT restart or stop playback; gently steer rate if needed
       if (driftSec < 0.150) {
-        if (driftSec > 0.040 && this.ctx) {
-          const rate = currentPos < expectedPos ? 1.015 : 0.985;
-          this.currentSourceNode.playbackRate.setValueAtTime(rate, this.ctx.currentTime);
-          this.currentSourceNode.playbackRate.setValueAtTime(1.0, this.ctx.currentTime + 0.35);
+        if (driftSec > 0.025) {
+          const rate = currentPos < expectedPos ? 1.005 : 0.995;
+          this.applyPlaybackRateToAll(rate);
         }
         return;
       }
@@ -587,86 +894,22 @@ export class WebAudioEngine {
 
     this.currentGeneration = generation;
 
-    const ctx = this.getAudioContext();
-    if (ctx.state !== 'running') {
-      await this.unlock();
-    }
-
-    if (!this.activeBuffer && this.currentTrack) {
-      await this.loadTrack(this.currentTrack);
-    }
-
-    if (!this.activeBuffer) {
-      console.warn('Cannot play: active audio buffer not available');
-      return;
-    }
-
-    this.stopActiveSource();
-
-    // Latency compensated scheduling and dynamic catch-up
-    const currentServerNow = timeSync.getServerTime();
-    const effectiveLatencyMs = timeSync.getMetrics().effectiveTotalLatencyMs;
-    const timeDeltaMs = scheduledServerTime - currentServerNow;
-
-    let targetAudioContextTime: number;
-    let safeOffset: number;
-
-    if (timeDeltaMs < 0) {
-      // The scheduled start time was in the past (e.g. network buffering delay or receiver joined mid-stream)
-      // Calculate how much time has elapsed since scheduled start, compensated for output latency
-      const elapsedSec = (Math.abs(timeDeltaMs) + effectiveLatencyMs) / 1000;
-      const livePositionSec = startPositionSec + elapsedSec;
-
-      if (livePositionSec >= this.activeBuffer.duration) {
-        // Track has already ended
-        this.state = 'ready';
-        this.notify();
-        return;
-      }
-
-      // Start immediately from current live offset
-      targetAudioContextTime = ctx.currentTime;
-      safeOffset = Math.max(0, Math.min(livePositionSec, this.activeBuffer.duration - 0.05));
-    } else {
-      // Normal scheduled start in future
-      const adjustedDeltaSec = Math.max(0, (timeDeltaMs - effectiveLatencyMs) / 1000);
-      targetAudioContextTime = ctx.currentTime + adjustedDeltaSec;
-      safeOffset = Math.max(0, Math.min(startPositionSec, this.activeBuffer.duration - 0.05));
-    }
-
-    const source = ctx.createBufferSource();
-    source.buffer = this.activeBuffer;
-    source.connect(this.masterGain!);
-
-    source.onended = () => {
-      if (this.currentSourceNode === source) {
-        this.stopDriftMonitor();
-        this.currentSourceNode = null;
-        this.state = 'ready';
-        this.updateMediaSession(this.currentTrack, false);
-        this.notify();
-        for (const cb of this.endedListeners) {
-          try {
-            cb();
-          } catch (e) {
-            console.error('Error in onEnded callback', e);
-          }
-        }
-      }
+    // Create or update authoritative BroadcastTimeline representation
+    const timeline: BroadcastTimeline = {
+      timelineId: `tl-${Date.now()}-${generation}`,
+      generation,
+      state: 'playing',
+      trackId: this.currentTrack?.id || null,
+      track: this.currentTrack,
+      startPositionSec,
+      broadcastStartTime: scheduledServerTime,
+      playbackRate: 1.0,
+      chunkDurationSec: this.chunkDurationSec,
+      serverTime: currentServerTime,
+      currentPositionSec: startPositionSec,
     };
 
-    source.start(targetAudioContextTime, safeOffset);
-    this.currentSourceNode = source;
-    this.playbackStartTimeSec = targetAudioContextTime;
-    this.trackOffsetSec = safeOffset;
-    this.scheduledServerStartTime = scheduledServerTime;
-    this.scheduledStartPositionSec = startPositionSec;
-    this.state = 'playing';
-
-    this.startDriftMonitor();
-    this.requestWakeLock();
-    this.updateMediaSession(this.currentTrack, true);
-    this.notify();
+    await this.updateTimeline(timeline);
   }
 
   /**
@@ -676,7 +919,7 @@ export class WebAudioEngine {
     if (this.driftMonitorTimer) clearInterval(this.driftMonitorTimer);
     this.driftMonitorTimer = setInterval(() => {
       this.evaluateAndCorrectDrift();
-    }, 1200);
+    }, 500);
   }
 
   private stopDriftMonitor() {
@@ -684,51 +927,50 @@ export class WebAudioEngine {
       clearInterval(this.driftMonitorTimer);
       this.driftMonitorTimer = null;
     }
-    if (this.isDriftCorrectionActive && this.currentSourceNode && this.ctx) {
-      try {
-        this.currentSourceNode.playbackRate.setValueAtTime(1.0, this.ctx.currentTime);
-      } catch {}
+    if (this.isDriftCorrectionActive) {
+      this.applyPlaybackRateToAll(1.0);
     }
     this.isDriftCorrectionActive = false;
     this.driftCorrectionRate = 1.0;
+    this.isPhaseLocked = true;
   }
 
   /**
-   * Active drift evaluation and acoustic alignment correction:
-   * - <= 20ms: deadband (in-phase lock, 1.0x rate)
-   * - 20ms to 120ms: pitch-neutral soft rate nudge (1.015x or 0.985x)
-   * - 120ms to 300ms: moderate rate nudge (1.03x or 0.97x)
-   * - > 300ms: hard resynchronization catch-up
+   * Continuous Phase-Locked Loop (PLL) drift evaluation and acoustic alignment correction:
+   * - <= 15ms: deadband (in-phase lock, 1.0x rate)
+   * - 15ms to 100ms: pitch-neutral soft rate nudge (±0.3%, inaudible)
+   * - 100ms to 250ms: moderate rate nudge (±1.5%)
+   * - > 250ms: hard resynchronization catch-up
    */
   public evaluateAndCorrectDrift() {
-    if (this.state !== 'playing' || !this.currentSourceNode || !this.ctx || !this.activeBuffer) {
+    if (this.state !== 'playing' || !this.ctx) {
       return;
     }
 
     const currentServerTime = timeSync.getServerTime();
+    let expectedPos: number;
+
+    if (this.timeline && this.timeline.state === 'playing') {
+      expectedPos = calculateTimelinePositionSec(this.timeline, currentServerTime);
+    } else {
+      expectedPos = this.scheduledStartPositionSec;
+      if (this.scheduledServerStartTime > 0) {
+        const elapsedSec = (currentServerTime - this.scheduledServerStartTime) / 1000;
+        expectedPos = this.scheduledStartPositionSec + Math.max(0, elapsedSec);
+      }
+    }
+
     const currentPos = this.getCurrentPosition();
-
-    // Calculate where this track SHOULD be right now according to the synchronized server clock:
-    let expectedPos = this.scheduledStartPositionSec;
-    if (this.scheduledServerStartTime > 0) {
-      const elapsedSec = (currentServerTime - this.scheduledServerStartTime) / 1000;
-      expectedPos = this.scheduledStartPositionSec + Math.max(0, elapsedSec);
-    }
-
-    if (expectedPos >= this.activeBuffer.duration) {
-      return;
-    }
-
-    // Drift: positive = receiver is leading (ahead of host), negative = receiver is lagging (behind host)
     const driftSec = currentPos - expectedPos;
     const driftMs = driftSec * 1000;
     this.currentSyncErrorMs = Math.round(driftMs);
     const absDriftMs = Math.abs(driftMs);
 
-    // 1. Deadband protection: <= 20ms deviation is considered in-phase lock
-    if (absDriftMs <= 20) {
+    // 1. Deadband protection: <= 15ms is in-phase acoustic lock
+    if (absDriftMs <= 15) {
+      this.isPhaseLocked = true;
       if (this.isDriftCorrectionActive) {
-        this.currentSourceNode.playbackRate.setValueAtTime(1.0, this.ctx.currentTime);
+        this.applyPlaybackRateToAll(1.0);
         this.isDriftCorrectionActive = false;
         this.driftCorrectionRate = 1.0;
         this.notify();
@@ -736,29 +978,46 @@ export class WebAudioEngine {
       return;
     }
 
-    // 2. Minor drift: 20ms to 120ms (smooth ±1.5% pitch-neutral rate nudge)
-    if (absDriftMs <= 120) {
+    this.isPhaseLocked = false;
+
+    // 2. Minor drift: 15ms to 100ms (inaudible ±0.3% rate steer)
+    if (absDriftMs <= 100) {
+      const targetRate = driftMs < 0 ? 1.003 : 0.997;
+      this.applyPlaybackRateToAll(targetRate);
+      this.isDriftCorrectionActive = true;
+      this.driftCorrectionRate = targetRate;
+      this.notify();
+      return;
+    }
+
+    // 3. Moderate drift: 100ms to 250ms (±1.5% rate steer)
+    if (absDriftMs <= 250) {
       const targetRate = driftMs < 0 ? 1.015 : 0.985;
-      this.currentSourceNode.playbackRate.setValueAtTime(targetRate, this.ctx.currentTime);
+      this.applyPlaybackRateToAll(targetRate);
       this.isDriftCorrectionActive = true;
       this.driftCorrectionRate = targetRate;
       this.notify();
       return;
     }
 
-    // 3. Moderate drift: 120ms to 300ms (±3.0% rate nudge)
-    if (absDriftMs <= 300) {
-      const targetRate = driftMs < 0 ? 1.03 : 0.97;
-      this.currentSourceNode.playbackRate.setValueAtTime(targetRate, this.ctx.currentTime);
-      this.isDriftCorrectionActive = true;
-      this.driftCorrectionRate = targetRate;
-      this.notify();
-      return;
+    // 4. Severe drift: > 250ms -> hard resynchronization catch-up
+    if (this.timeline) {
+      this.resyncToTimeline();
     }
+  }
 
-    // 4. Severe drift: > 300ms (e.g. mobile tab suspended or prolonged Wi-Fi dropout)
-    // Perform hard resynchronization to snap back into lockstep
-    this.schedulePlay(this.scheduledServerStartTime, this.scheduledStartPositionSec, this.currentGeneration);
+  private applyPlaybackRateToAll(rate: number) {
+    if (!this.ctx) return;
+    if (this.currentSourceNode) {
+      try {
+        this.currentSourceNode.playbackRate.setTargetAtTime(rate, this.ctx.currentTime, 0.05);
+      } catch {}
+    }
+    for (const src of this.scheduledChunkSources.values()) {
+      try {
+        src.playbackRate.setTargetAtTime(rate, this.ctx.currentTime, 0.05);
+      } catch {}
+    }
   }
 
   public getCurrentSyncErrorMs(): number {
@@ -773,11 +1032,41 @@ export class WebAudioEngine {
   }
 
   /**
+   * Detailed Synchronized Radio diagnostics for monitoring panel
+   */
+  public getRadioDiagnostics(): RadioDiagnosticsInfo {
+    const serverNow = timeSync.getServerTime();
+    const broadcastPos = this.timeline ? calculateTimelinePositionSec(this.timeline, serverNow) : 0;
+    const receiverPos = this.getCurrentPosition();
+    const bufferedChunks = this.jitterBuffer.size;
+    const bufferedDurationSec = bufferedChunks * this.chunkDurationSec;
+    const rttMs = timeSync.getMetrics().roundTripTimeMs;
+
+    return {
+      broadcastPositionSec: Math.max(0, broadcastPos),
+      receiverPositionSec: Math.max(0, receiverPos),
+      syncErrorMs: this.currentSyncErrorMs,
+      jitterBufferDurationSec: bufferedDurationSec,
+      jitterBufferChunks: bufferedChunks,
+      underrunCount: this.underrunCount,
+      driftRate: this.driftCorrectionRate,
+      isPhaseLocked: this.isPhaseLocked,
+      rttMs,
+    };
+  }
+
+  /**
    * Pause playback immediately
    */
   public pause() {
+    this.flushScheduledSources();
     this.stopActiveSource();
+    this.stopRadioScheduler();
     this.state = 'paused';
+    if (this.timeline) {
+      this.timeline.state = 'paused';
+      this.timeline.startPositionSec = this.getCurrentPosition();
+    }
     this.updateMediaSession(this.currentTrack, false);
     this.notify();
   }
@@ -785,13 +1074,11 @@ export class WebAudioEngine {
   /**
    * Pause playback
    */
-  public schedulePause(_scheduledServerTime: number, _pausePositionSec: number, generation: number = 0) {
+  public schedulePause(_scheduledServerTime: number, pausePositionSec: number, generation: number = 0) {
     if (generation < this.currentGeneration) return;
     this.currentGeneration = generation;
-    this.stopActiveSource();
-    this.state = 'paused';
-    this.updateMediaSession(this.currentTrack, false);
-    this.notify();
+    this.trackOffsetSec = pausePositionSec;
+    this.pause();
   }
 
   /**
@@ -800,13 +1087,41 @@ export class WebAudioEngine {
   public async scheduleSeek(scheduledServerTime: number, targetPositionSec: number, generation: number = 0) {
     if (generation < this.currentGeneration) return;
     this.currentGeneration = generation;
-    await this.schedulePlay(scheduledServerTime, targetPositionSec, generation);
+    this.flushScheduledSources();
+    this.jitterBuffer.clear();
+    this.inFlightChunkFetches.clear();
+    this.trackOffsetSec = targetPositionSec;
+
+    const currentServerTime = timeSync.getServerTime();
+    const timeline: BroadcastTimeline = {
+      timelineId: `tl-${Date.now()}-${generation}`,
+      generation,
+      state: this.state === 'playing' ? 'playing' : 'paused',
+      trackId: this.currentTrack?.id || null,
+      track: this.currentTrack,
+      startPositionSec: targetPositionSec,
+      broadcastStartTime: scheduledServerTime,
+      playbackRate: 1.0,
+      chunkDurationSec: this.chunkDurationSec,
+      serverTime: currentServerTime,
+      currentPositionSec: targetPositionSec,
+    };
+
+    await this.updateTimeline(timeline);
   }
 
   public stop() {
+    this.flushScheduledSources();
     this.stopActiveSource();
+    this.stopRadioScheduler();
+    this.jitterBuffer.clear();
+    this.inFlightChunkFetches.clear();
     this.trackOffsetSec = 0;
     this.state = 'ready';
+    if (this.timeline) {
+      this.timeline.state = 'stopped';
+      this.timeline.startPositionSec = 0;
+    }
     this.releaseWakeLock();
     this.updateMediaSession(this.currentTrack, false);
     this.notify();
@@ -830,6 +1145,10 @@ export class WebAudioEngine {
    * Current estimated track position in seconds
    */
   public getCurrentPosition(): number {
+    if (this.timeline && this.timeline.state === 'playing') {
+      const serverNow = timeSync.getServerTime();
+      return calculateTimelinePositionSec(this.timeline, serverNow);
+    }
     if (this.state === 'playing' && this.ctx) {
       const elapsed = Math.max(0, this.ctx.currentTime - this.playbackStartTimeSec);
       const pos = this.trackOffsetSec + elapsed;

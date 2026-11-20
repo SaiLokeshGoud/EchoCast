@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { AudioTrackMetadata, DeviceAudioOutput } from '@echocast/shared';
+import { AudioTrackMetadata, DeviceAudioOutput, RadioDiagnosticsInfo } from '@echocast/shared';
 import { webAudioEngine, AudioEngineState } from '../core/audio/webAudioEngine';
 
 export function useAudioEngine() {
@@ -20,6 +20,9 @@ export function useAudioEngine() {
   const [driftCorrectionInfo, setDriftCorrectionInfo] = useState<{ active: boolean; rate: number }>(
     webAudioEngine.getDriftCorrectionInfo()
   );
+  const [radioDiagnostics, setRadioDiagnostics] = useState<RadioDiagnosticsInfo>(
+    webAudioEngine.getRadioDiagnostics()
+  );
 
   useEffect(() => {
     const unsubscribe = webAudioEngine.subscribe(() => {
@@ -37,6 +40,7 @@ export function useAudioEngine() {
       setLastErrorMessage(webAudioEngine.getLastErrorMessage());
       setSyncErrorMs(webAudioEngine.getCurrentSyncErrorMs());
       setDriftCorrectionInfo(webAudioEngine.getDriftCorrectionInfo());
+      setRadioDiagnostics(webAudioEngine.getRadioDiagnostics());
     });
 
     // Position update interval when playing
@@ -44,6 +48,7 @@ export function useAudioEngine() {
       setPositionSec(webAudioEngine.getCurrentPosition());
       setSyncErrorMs(webAudioEngine.getCurrentSyncErrorMs());
       setDriftCorrectionInfo(webAudioEngine.getDriftCorrectionInfo());
+      setRadioDiagnostics(webAudioEngine.getRadioDiagnostics());
     }, 100);
 
     return () => {
@@ -99,6 +104,7 @@ export function useAudioEngine() {
     lastErrorMessage,
     syncErrorMs,
     driftCorrectionInfo,
+    radioDiagnostics,
     isUnlocked,
     unlockAudio,
     setVolume,

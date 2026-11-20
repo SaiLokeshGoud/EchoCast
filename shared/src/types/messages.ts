@@ -4,6 +4,8 @@ import { NetworkInterfaceInfo } from './network';
 import {
   AudioTrackMetadata,
   BroadcastState,
+  BroadcastTimeline,
+  AudioChunkMetadata,
   PlayCommandPayload,
   PauseCommandPayload,
   SeekCommandPayload,
@@ -30,6 +32,8 @@ export type WsMessageType =
 
   // Broadcast & Audio Playback
   | 'BROADCAST_STATE'
+  | 'BROADCAST_TIMELINE_UPDATE'
+  | 'BROADCAST_AUDIO_CHUNK_AVAILABLE'
   | 'BROADCAST_TRACK_UPDATE'
   | 'BROADCAST_PLAYLIST_UPDATE'
   | 'BROADCAST_AUTOPLAY_UPDATE'
@@ -74,6 +78,8 @@ export type WsMessage =
   | { type: 'SYNC_PONG'; payload: SyncPongPayload; timestamp: number; senderId?: string }
   | { type: 'SYNC_FORCE_CALIBRATE'; payload: Record<string, never>; timestamp: number; senderId?: string }
   | { type: 'BROADCAST_STATE'; payload: BroadcastState; timestamp: number; senderId?: string }
+  | { type: 'BROADCAST_TIMELINE_UPDATE'; payload: BroadcastTimeline; timestamp: number; senderId?: string }
+  | { type: 'BROADCAST_AUDIO_CHUNK_AVAILABLE'; payload: AudioChunkMetadata; timestamp: number; senderId?: string }
   | { type: 'BROADCAST_TRACK_UPDATE'; payload: AudioTrackMetadata | null; timestamp: number; senderId?: string }
   | { type: 'BROADCAST_PLAYLIST_UPDATE'; payload: { playlist: AudioTrackMetadata[] }; timestamp: number; senderId?: string }
   | { type: 'BROADCAST_AUTOPLAY_UPDATE'; payload: { autoplay: boolean }; timestamp: number; senderId?: string }
